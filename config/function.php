@@ -3634,7 +3634,7 @@ if (isset($_POST['action']) && $_POST['action'] == 'scan_in_wh_subcont') {
             }
 
             // VALIDASI URUTAN GATE
-            $expected_last_gate = 'SM_SUBCONT_TO_WH_SUBCONT';
+            $expected_last_gate = 'SM_SUBCONT_FROM_CUT';
 
             if ($data['last_gate'] !== $expected_last_gate) {
 
@@ -3669,7 +3669,7 @@ if (isset($_POST['action']) && $_POST['action'] == 'scan_in_wh_subcont') {
                 UPDATE tbl_transaksi SET
                     last_gate = 'WH_SUBCONT_FROM_SM_SUBCONT',
                     transac_by = '$scan_by',
-                    qty_whsubcont_fr_smsubcont = qty_smsubcont_to_whsubcont,
+                    qty_whsubcont_fr_smsubcont = qty_smsubcont_fr_cut,
                     updated_at = NOW()
                 WHERE id_trans = '{$data['id_trans']}'
             ");
@@ -3684,7 +3684,7 @@ if (isset($_POST['action']) && $_POST['action'] == 'scan_in_wh_subcont') {
             $new_data['last_gate'] = 'WH_SUBCONT_FROM_SM_SUBCONT';
 
             $new_data['qty_whsubcont_fr_smsubcont'] =
-                $old_data['qty_smsubcont_to_whsubcont'];
+                $old_data['qty_smsubcont_fr_cut'];
 
             $new_data['transac_by'] = $scan_by;    
 
@@ -3703,8 +3703,8 @@ if (isset($_POST['action']) && $_POST['action'] == 'scan_in_wh_subcont') {
                     size = '{$data['size']}',
                     gate = 'WH_SUBCONT_FROM_SM_SUBCONT',
                     flow_type = 'IN',
-                    qty = '{$data['qty_smsubcont_to_whsubcont']}',
-                    qty_before = '{$data['qty_smsubcont_to_whsubcont']}',
+                    qty = '{$data['qty_smsubcont_fr_cut']}',
+                    qty_before = '{$data['qty_smsubcont_fr_cut']}',
                     qty_after = NULL,
                     transac_by = '$scan_by',
                     created_at = NOW()
@@ -4927,7 +4927,7 @@ if (
         foreach ($all_data as $d) {
 
             if (
-                $d['last_gate'] != 'WH_SUBCONT_TO_SM_SUBCONT'
+                $d['last_gate'] != 'WH_SUBCONT_FROM_VENDOR'
             ) {
 
                 $current_gate = $d['last_gate'];
@@ -4987,7 +4987,7 @@ if (
                 UPDATE tbl_transaksi SET
                     last_gate = 'SM_SUBCONT_FROM_WH_SUBCONT',
                     transac_by = '$scan_by',
-                    qty_smsubcont_fr_whsubcont = qty_whsubcont_to_smsubcont,
+                    qty_smsubcont_fr_whsubcont = qty_whsubcont_fr_vendor,
                     updated_at = NOW()
                 WHERE id_trans = '{$data['id_trans']}'
             ");
@@ -5020,8 +5020,8 @@ if (
                     size = '{$data['size']}',
                     gate = 'SM_SUBCONT_FROM_WH_SUBCONT',
                     flow_type = 'IN',
-                    qty = '{$data['qty_whsubcont_to_smsubcont']}',
-                    qty_before = '{$data['qty_whsubcont_to_smsubcont']}',
+                    qty = '{$data['qty_whsubcont_fr_vendor']}',
+                    qty_before = '{$data['qty_whsubcont_fr_vendor']}',
                     qty_after = NULL,
                     transac_by = '$scan_by',
                     created_at = NOW()

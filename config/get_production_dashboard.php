@@ -212,7 +212,7 @@ $response = [
 
             "SM_SUBCONT_FROM_CUT",
 
-            "SM_SUBCONT_TO_WH_SUBCONT"
+            "WH_SUBCONT_FROM_SM_SUBCONT"
 
         ),
 
@@ -226,7 +226,7 @@ $response = [
 
             "SM_SUBCONT_FROM_CUT",
 
-            "SM_SUBCONT_TO_WH_SUBCONT"
+            "WH_SUBCONT_FROM_SM_SUBCONT"
 
         )
 
@@ -244,7 +244,7 @@ $response = [
 
             "SM_SUBCONT_FROM_WH_SUBCONT",
 
-            "SM_SUBCONT_TO_PROD"
+            "SM_SUBCONT_TO_NCVS"
 
         ),
 
@@ -258,7 +258,7 @@ $response = [
 
             "SM_SUBCONT_FROM_WH_SUBCONT",
 
-            "SM_SUBCONT_TO_PROD"
+            "SM_SUBCONT_TO_NCVS"
 
         )
 

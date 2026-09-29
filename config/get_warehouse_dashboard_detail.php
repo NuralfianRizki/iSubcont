@@ -38,7 +38,7 @@ $gateMap = [
 
         "in" => "WH_SUBCONT_FROM_VENDOR",
 
-        "out" => "WH_SUBCONT_TO_SM_SUBCONT"
+        "out" => "SM_SUBCONT_FROM_WH_SUBCONT"
 
     ]
 

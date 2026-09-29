@@ -25,13 +25,13 @@ if ($flow === 'wh') {
         'WH_SUBCONT_FROM_SM_SUBCONT' => 'wh_incoming',
         'WH_SUBCONT_TO_VENDOR'       => 'wh_vendor',
         'WH_SUBCONT_FROM_VENDOR'     => 'wh_return',
-        'WH_SUBCONT_TO_SM_SUBCONT'   => 'wh_to_sm'
+        'SM_SUBCONT_FROM_WH_SUBCONT'   => 'wh_to_sm'
     ];
 } else {
 
     $gateMap = [
         'SM_SUBCONT_FROM_CUT'         => 'in_sm',
-        'SM_SUBCONT_TO_WH_SUBCONT'    => 'send_wh',
+        'WH_SUBCONT_FROM_SM_SUBCONT'    => 'send_wh',
         'SM_SUBCONT_FROM_WH_SUBCONT'  => 'return_sm',
         'SM_SUBCONT_TO_NCVS'          => 'out_prod'
     ];

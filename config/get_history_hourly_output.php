@@ -158,7 +158,7 @@ AND tm.status = 1
 
 WHERE
 
-te.gate='SM_SUBCONT_TO_WH_SUBCONT'
+te.gate='WH_SUBCONT_FROM_SM_SUBCONT'
 
 AND DATE(te.created_at)='$date'
 

@@ -244,7 +244,7 @@ $response = [
 
             "WH_SUBCONT_FROM_VENDOR",
 
-            "WH_SUBCONT_TO_SM_SUBCONT"
+            "SM_SUBCONT_FROM_WH_SUBCONT"
 
         ),
 
@@ -258,7 +258,7 @@ $response = [
 
             "WH_SUBCONT_FROM_VENDOR",
 
-            "WH_SUBCONT_TO_SM_SUBCONT"
+            "SM_SUBCONT_FROM_WH_SUBCONT"
 
         )
 

@@ -1,6 +1,4 @@
-Thanks for downloading this template!
+Internal Project
+Internal Application of iSubcont - Phase 2
 
-Template Name: NiceAdmin
-Template URL: https://bootstrapmade.com/nice-admin-bootstrap-admin-html-template/
-Author: BootstrapMade.com
-License: https://bootstrapmade.com/license/
+Manufacturing Project Officer @2026

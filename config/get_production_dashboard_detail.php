@@ -30,7 +30,7 @@ $gateMap = [
 
         "in" => "SM_SUBCONT_FROM_CUT",
 
-        "out" => "SM_SUBCONT_TO_WH_SUBCONT"
+        "out" => "WH_SUBCONT_FROM_SM_SUBCONT"
 
     ],
 
@@ -38,7 +38,7 @@ $gateMap = [
 
         "in" => "SM_SUBCONT_FROM_WH_SUBCONT",
 
-        "out" => "SM_SUBCONT_TO_PROD"
+        "out" => "SM_SUBCONT_TO_NCVS"
 
     ]
 

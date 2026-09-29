@@ -18,17 +18,17 @@ $gateMap = [
 
     "pre_vendor" => [
 
-        "in"  => "SM_SUBCONT_FROM_CUT",
+        "in" => "SM_SUBCONT_FROM_CUT",
 
-        "out" => "SM_SUBCONT_TO_WH_SUBCONT"
+        "out" => "WH_SUBCONT_FROM_SM_SUBCONT"
 
     ],
 
     "after_vendor" => [
 
-        "in"  => "SM_SUBCONT_FROM_WH_SUBCONT",
+        "in" => "SM_SUBCONT_FROM_WH_SUBCONT",
 
-        "out" => "SM_SUBCONT_TO_PROD"
+        "out" => "SM_SUBCONT_TO_NCVS"
 
     ],
 
@@ -44,7 +44,7 @@ $gateMap = [
 
         "in" => "WH_SUBCONT_FROM_VENDOR",
 
-        "out" => "WH_SUBCONT_TO_SM_SUBCONT"
+        "out" => "SM_SUBCONT_FROM_WH_SUBCONT"
 
     ]
 

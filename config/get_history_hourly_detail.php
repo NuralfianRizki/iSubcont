@@ -23,7 +23,7 @@ if ($process == 'IN') {
     $gate = 'SM_SUBCONT_FROM_CUT';
 } else {
 
-    $gate = 'SM_SUBCONT_TO_WH_SUBCONT';
+    $gate = 'WH_SUBCONT_FROM_SM_SUBCONT';
 }
 
 $joinTime = "";
