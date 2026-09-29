@@ -349,9 +349,9 @@ $username = $_SESSION['username']; // Query ringkasan per job_order
                               $d = $sizesData[$size] ?? [
                                 'plan'      => 0,
                                 'wh_incoming'     => 0,
-                                'send_vendor'   => 0,
-                                'return_wh' => 0,
-                                'out_sm'  => 0
+                                'wh_vendor'   => 0,
+                                'wh_return' => 0,
+                                'wh_to_sm'  => 0
                               ];
 
                               $sumPlan     += (float) $d['plan'];
