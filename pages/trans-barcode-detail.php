@@ -47,80 +47,42 @@ $info = $conn->query($infoQuery)->fetch_assoc();
 $model = $conn->real_escape_string($info['model'] ?? '');
 
 $komponenList = $conn->query("
-  SELECT
+  SELECT 
+    kp.id_proses,
+    kp.is_main,
 
-    kp.id_group,
+    -- INPUT
+    ki.id_komponen AS id_input,
+    ki.nama_komponen AS nm_input,
 
-    kp.id_output,
-
+    -- OUTPUT
+    ko.id_komponen AS id_output,
     ko.nama_komponen AS nm_output,
 
-    main_component.id_komponen AS id_main_input,
-    main_component.nama_komponen AS nm_main_input,
-
-    GROUP_CONCAT(
-        ki.id_komponen
-        ORDER BY kp.is_main DESC, ki.nama_komponen ASC
-        SEPARATOR '|'
-    ) AS id_input_list,
-
-    GROUP_CONCAT(
-        ki.nama_komponen
-        ORDER BY kp.is_main DESC, ki.nama_komponen ASC
-        SEPARATOR '|'
-    ) AS nm_input_list,
-
-    GROUP_CONCAT(
-        kp.is_main
-        ORDER BY kp.is_main DESC, ki.nama_komponen ASC
-        SEPARATOR '|'
-    ) AS is_main_list,
-
-    MAX(v.id_vendor) AS id_vendor,
-
-    MAX(v.name_vendor) AS name_vendor
+    -- VENDOR
+    v.id_vendor,
+    v.name_vendor
 
 FROM tbl_komponen_proses kp
 
 JOIN tbl_komponen ki 
-    ON ki.id_komponen = kp.id_input
-    AND ki.is_deleted = 0
+  ON kp.id_input = ki.id_komponen
 
 JOIN tbl_komponen ko 
-    ON ko.id_komponen = kp.id_output
-    AND ko.is_deleted = 0
+  ON kp.id_output = ko.id_komponen
 
-JOIN tbl_komponen main_component
-    ON main_component.id_komponen = kp.id_group
-    AND main_component.is_deleted = 0
-
-LEFT JOIN (
-    SELECT DISTINCT
-        id_proses,
-        id_vendor
-    FROM tbl_vendor_proses
-) vp
-    ON vp.id_proses = kp.id_proses
+LEFT JOIN tbl_vendor_proses vp
+  ON vp.id_proses = kp.id_proses
 
 LEFT JOIN tbl_vendor v
-    ON v.id_vendor = vp.id_vendor
-    AND v.is_deleted = 0
+  ON v.id_vendor = vp.id_vendor
+  AND v.is_deleted = 0
 
-WHERE 
-    ki.model = '{$model}'
+WHERE ki.model = '{$model}'
+  AND ki.is_deleted = 0
+  AND ko.is_deleted = 0
 
-GROUP BY
-
-    kp.id_group,
-    kp.id_output,
-    ko.nama_komponen,
-    main_component.id_komponen,
-    main_component.nama_komponen
-
-ORDER BY
-
-    ko.nama_komponen ASC,
-    main_component.nama_komponen ASC
+ORDER BY kp.is_main DESC, ki.nama_komponen ASC
 ")->fetch_all(MYSQLI_ASSOC);
 
 // 2️⃣ Ambil LOT & SIZE
@@ -271,35 +233,6 @@ usort($officialSizes, function ($a, $b) {
     font-size: 12px;
     margin-top: 6px;
     color: #0d6efd;
-  }
-
-  .group-komponen-card {
-    align-items: flex-start;
-  }
-
-  .group-child-component {
-    font-size: 13px;
-    color: #6c757d;
-    line-height: 1.45;
-    padding-left: 2px;
-  }
-
-  .komponen-header {
-    font-weight: 600;
-    color: #333;
-    line-height: 1.45;
-  }
-
-  .komponen-sub {
-    color: #6c757d;
-    font-size: 13px;
-    line-height: 1.45;
-  }
-
-  .komponen-vendor {
-    color: #0d6efd;
-    font-size: 13px;
-    line-height: 1.45;
   }
 
   #tableStrukBarcode th,
@@ -728,11 +661,12 @@ usort($officialSizes, function ($a, $b) {
           <thead class="table-light text-center">
 
             <tr>
-            <tr>
+              <tr>
               <th class="text-center">
                 <input
                   type="checkbox"
-                  id="checkAll">
+                  id="checkAll"
+                >
               </th>
               <th>No</th>
               <th>Bucket</th>
@@ -759,14 +693,15 @@ usort($officialSizes, function ($a, $b) {
         </table>
 
       </div>
-
+      
       <div class="card-footer">
         <div class="mt-3 text-end">
 
           <button
             type="button"
             id="btnPrintAll"
-            class="btn btn-success">
+            class="btn btn-success"
+          >
             <i class="bi bi-printer"></i>
             Print All
           </button>
@@ -774,7 +709,7 @@ usort($officialSizes, function ($a, $b) {
         </div>
 
       </div>
-
+      
 
     </div>
 
@@ -827,7 +762,7 @@ usort($officialSizes, function ($a, $b) {
   <!-- Barcode Generate -->
   <!-- <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script> -->
   <!-- <script src="https://cdn.jsdelivr.net/npm/bwip-js@3.0.9/dist/bwip-js-min.js"></script> -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
   <script>
     $(function() {
@@ -1042,22 +977,26 @@ usort($officialSizes, function ($a, $b) {
             //   row.qty_smsubcont_fr_cut != null &&
             //   Number(row.count_barcode || 0) > 0;
 
-            // const isScanned =
-            //   parseInt(row.count_barcode || 0) > 0;
+            const isScanned =
+            parseInt(row.count_barcode || 0) > 0;
 
-            const isScanned = false;
-
-            // console.log(
-            //     row.barcode,
-            //     row.count_barcode,
-            //     isScanned
-            // );
+              // console.log(
+              //     row.barcode,
+              //     row.count_barcode,
+              //     isScanned
+              // );
 
             const componentName =
-              row.nm_komponen_in ?? '';
-
-            const componentMain =
-              row.nm_komponen_main ?? '';
+              String(
+                row.nm_komponen_in ?? ''
+              ) +
+              (
+                Number(
+                  row.is_main_komponen
+                ) === 1 ?
+                ' *' :
+                ''
+              );
 
             const lotData =
               JSON.stringify([
@@ -1073,7 +1012,11 @@ usort($officialSizes, function ($a, $b) {
                 type="checkbox"
                 class="row-checkbox"
                 data-barcode="${escapeHtml(row.barcode)}"
-                
+                ${
+                    Number(row.count_barcode || 0) > 0
+                    ? 'disabled'
+                    : ''
+                }
               >
               </td>
 
@@ -1137,9 +1080,17 @@ usort($officialSizes, function ($a, $b) {
                   class="
                     btn
                     btn-sm
-                    btn-primary
+                    ${isScanned
+                      ? 'btn-secondary'
+                      : 'btn-primary'
+                    }
                     btnPrintRow
                   "
+
+                  ${isScanned
+                    ? 'disabled'
+                    : ''
+                  }
 
                   data-joborder="${escapeHtml(row.job_order)}"
                   data-bucket="${escapeHtml(row.bucket)}"
@@ -1155,7 +1106,6 @@ usort($officialSizes, function ($a, $b) {
                   data-created_at="${escapeHtml(row.created_at)}"
 
                   data-nm_komponen_in="${escapeHtml(componentName)}"
-                  data-nm_komponen_main="${escapeHtml(componentMain)}"
 
                   data-size="${escapeHtml(row.size_detail)}"
                   data-total_qty="${escapeHtml(row.total_qty)}"
@@ -1168,7 +1118,10 @@ usort($officialSizes, function ($a, $b) {
 
                   <i class="bi bi-printer"></i>
 
-                 Print
+                  ${isScanned
+                    ? 'Sudah Scan'
+                    : 'Print'
+                  }
 
                 </button>
 
@@ -1324,120 +1277,120 @@ usort($officialSizes, function ($a, $b) {
     );
 
     // get data dari row untuk print
-    function getRowData(btn) {
+    function getRowData(btn){
 
-      let lot = '';
+    let lot = '';
 
-      try {
+    try{
 
         lot =
-          JSON.parse(
-            btn.attr('data-lot')
-          )[0];
+            JSON.parse(
+                btn.attr('data-lot')
+            )[0];
 
-      } catch (e) {
+    }catch(e){
 
         lot = '';
-      }
-
-      return {
-
-        job_order: btn.data('joborder'),
-        bucket: btn.data('bucket'),
-        po_code: btn.data('po_code'),
-        po_item: btn.data('poitem'),
-        model: btn.data('model'),
-        style: btn.data('style'),
-        ncvs: btn.data('ncvs'),
-        size: btn.data('size'),
-        qty: btn.data('total_qty'),
-        komponen: btn.data('nm_komponen_main'),
-        barcode: btn.data('barcode'),
-        lot: lot,
-
-        count_barcode: btn.data('count_barcode') || 0
-
-      };
-
     }
-  </script>
 
+    return {
+
+      job_order: btn.data('joborder'),
+      bucket: btn.data('bucket'),
+      po_code: btn.data('po_code'),
+      po_item: btn.data('poitem'),
+      model: btn.data('model'),
+      style: btn.data('style'),
+      ncvs: btn.data('ncvs'),
+      size: btn.data('size'),
+      qty: btn.data('total_qty'),
+      komponen: btn.data('nm_komponen_in'),
+      barcode: btn.data('barcode'),
+      lot: lot,
+
+      count_barcode: btn.data('count_barcode') || 0
+
+    };
+
+  }
+  </script>
+  
 
   <!-- //============================
   // Fungsi Print
   //============================ -->
   <script>
     // Event print per row
-    $(document).on(
+      $(document).on(
       'click',
       '.btnPrintRow',
-      function() {
+      function(){
 
-        printLabels([
-          getRowData(
-            $(this)
-          )
-        ]);
+          printLabels([
+              getRowData(
+                  $(this)
+              )
+          ]);
 
       }
     );
 
     // Print massal
-    $(document).on(
-      'click',
-      '#btnPrintAll',
-      function() {
+   $(document).on(
+    'click',
+    '#btnPrintAll',
+      function(){
 
-        const table =
-          $('#tableStrukBarcode')
-          .DataTable();
+          const table =
+              $('#tableStrukBarcode')
+              .DataTable();
 
-        const rows = [];
+          const rows=[];
 
-        table.$('.row-checkbox:checked')
-          .each(function() {
+          table.$('.row-checkbox:checked')
+          .each(function(){
 
-            const btn =
-              $(this)
-              .closest('tr')
-              .find('.btnPrintRow');
+              const btn =
+                  $(this)
+                  .closest('tr')
+                  .find('.btnPrintRow');
 
-            rows.push(
-              getRowData(btn)
-            );
+              rows.push(
+                  getRowData(btn)
+              );
 
           });
 
-        console.log(rows);
+          console.log(rows);
 
-        if (rows.length === 0) {
+          if(rows.length===0){
 
-          alert(
-            'Pilih data terlebih dahulu'
-          );
+              alert(
+                  'Pilih data terlebih dahulu'
+              );
 
-          return;
-        }
+              return;
+          }
 
-        printLabels(rows);
+          printLabels(rows);
 
       }
     );
 
-    // Print function (dummy)
-    function printLabels(rows) {
+  // Print function (dummy)
+  function printLabels(rows){
 
-      const win =
-        window.open(
-          '',
-          '_blank'
-        );
+    const win =
+    window.open(
+        '',
+        '_blank'
+    );
 
-      win.rowsToUpdate = rows;
+    win.rowsToUpdate = rows;
 
-      let htmlLabels = '';
+    let htmlLabels='';
 
-      rows.forEach(function(row, index) {
+    rows.forEach(function(row,index){
 
         htmlLabels += `
 
@@ -1493,10 +1446,10 @@ usort($officialSizes, function ($a, $b) {
 
         `;
 
-      });
+    });
 
-      win.rowsToUpdate = rows;
-      win.document.write(`
+    win.rowsToUpdate = rows;
+    win.document.write(`
 
     <!DOCTYPE html>
 
@@ -1661,7 +1614,7 @@ usort($officialSizes, function ($a, $b) {
 
     `);
 
-      win.document.close();
+        win.document.close();
 
     }
 
@@ -1669,60 +1622,60 @@ usort($officialSizes, function ($a, $b) {
     // ===========================
     // Update Count Print
     // ==========================
-    function updatePrintCount(rows) {
+    function updatePrintCount(rows){
 
       const barcodes =
-        rows.map(
-          row => row.barcode
-        );
+          rows.map(
+              row => row.barcode
+          );
 
       console.log(
-        'UPDATE BARCODE =>',
-        barcodes
+          'UPDATE BARCODE =>',
+          barcodes
       );
 
       $.ajax({
 
-        url: './../config/update_count_barcode.php',
+          url:'./../config/update_count_barcode.php',
 
-        type: 'POST',
+          type:'POST',
 
-        dataType: 'json',
+          dataType:'json',
 
-        data: {
-          barcodes: barcodes
-        },
+          data:{
+              barcodes: barcodes
+          },
 
-        success: function(res) {
+          success:function(res){
 
-          console.log(res);
+              console.log(res);
 
-          if (res.status) {
+              if(res.status){
 
-            location.reload();
+                  location.reload();
+
+              }
+
+          },
+
+          error:function(xhr){
+
+              console.error(xhr);
 
           }
 
-        },
-
-        error: function(xhr) {
-
-          console.error(xhr);
-
-        }
-
       });
-    }
+  }
   </script>
 
-
+  
 
 
 
 
   <!-- Notification print Struk -->
   <?php include_once __DIR__ . '/../includes/notification.php'; ?>
-
+  
   <script>
     // ==========================
     // TOAST SUCCESS
@@ -1995,89 +1948,40 @@ usort($officialSizes, function ($a, $b) {
         komponenHtml = '<div class="row g-2">';
 
         komponenList.forEach(k => {
-
-          const inputNames =
-            String(k.nm_input_list || '')
-            .split('|')
-            .filter(Boolean);
-
-          const inputIds =
-            String(k.id_input_list || '')
-            .split('|')
-            .filter(Boolean);
-
-          const isMainList =
-            String(k.is_main_list || '')
-            .split('|')
-            .filter(Boolean);
-
-          let childDetailHtml = '';
-
-          inputNames.forEach(function(name, index) {
-
-            const isMain =
-              Number(isMainList[index] || 0);
-
-            if (isMain !== 1) {
-
-              childDetailHtml += `
-        <div class="group-child-component">
-          → ${escapeHtml(name)}
-        </div>
-      `;
-
-            }
-
-          });
-
           komponenHtml += `
-    <div class="col-md-6">
-      <div class="komponen-card group-komponen-card">
+      <div class="col-md-6">
+        <div class="komponen-card">
 
-        <input 
-          class="check-komponen"
-          type="checkbox"
+          <input 
+            class="check-komponen"
+            type="checkbox"
+            data-id-input="${k.id_input}"
+            data-nm-input="${k.nm_input}"
+            data-id-output="${k.id_output}"
+            data-nm-output="${k.nm_output}"
+            data-id-vendor="${k.id_vendor || ''}"
+            data-nm-vendor="${k.name_vendor || ''}"
+            data-is-main="${k.is_main || 0}"
+          >
 
-          data-id-group="${k.id_group}"
-          data-nm-group="${k.nm_main_input}"
+          <div class="komponen-content">
+            <div class="komponen-header">
+              ${k.nm_input}
+              ${k.is_main == 1 ? '<span class="text-danger fw-bold ms-1">*</span>' : ''}
+            </div>
 
-          data-id-main-input="${k.id_main_input}"
-          data-nm-main-input="${k.nm_main_input}"
+            <div class="komponen-sub">
+              → ${k.nm_output}
+            </div>
 
-          data-id-input-list="${inputIds.join('|')}"
-          data-nm-input-list="${inputNames.join('|')}"
-          data-is-main-list="${isMainList.join('|')}"
-
-          data-id-output="${k.id_output}"
-          data-nm-output="${k.nm_output}"
-
-          data-id-vendor="${k.id_vendor || ''}"
-          data-nm-vendor="${k.name_vendor || ''}"
-        >
-
-        <div class="komponen-content">
-
-          <div class="komponen-header">
-            ${escapeHtml(k.nm_main_input)}
-            <span class="text-danger fw-bold ms-1">*</span>
-          </div>
-
-          ${childDetailHtml}
-
-          <div class="komponen-sub mt-1">
-            to "${escapeHtml(k.nm_output)}"
-          </div>
-
-          <div class="komponen-vendor">
-            → ${escapeHtml(k.name_vendor ?? '-')}
+            <div class="komponen-vendor">
+              → ${k.name_vendor ?? '-'}
+            </div>
           </div>
 
         </div>
-
       </div>
-    </div>
-  `;
-
+    `;
         });
 
         komponenHtml += '</div>';
@@ -2117,45 +2021,18 @@ usort($officialSizes, function ($a, $b) {
       const selectedKomponen = [];
 
       $('.check-komponen:checked').each(function() {
-
         selectedKomponen.push({
-
-          id_group: $(this).data('id-group'),
-
-          nm_group: $(this).data('nm-group'),
-
-          id_main_input: $(this).data('id-main-input'),
-
-          nm_main_input: $(this).data('nm-main-input'),
-
-          id_input_list: String(
-              $(this).data('id-input-list') || ''
-            )
-            .split('|')
-            .filter(Boolean),
-
-          nm_input_list: String(
-              $(this).data('nm-input-list') || ''
-            )
-            .split('|')
-            .filter(Boolean),
-
-          is_main_list: String(
-              $(this).data('is-main-list') || ''
-            )
-            .split('|')
-            .filter(Boolean),
+          id_input: $(this).data('id-input'),
+          nm_input: $(this).data('nm-input'),
 
           id_output: $(this).data('id-output'),
-
           nm_output: $(this).data('nm-output'),
 
           id_vendor: $(this).data('id-vendor'),
+          nm_vendor: $(this).data('nm-vendor'),
 
-          nm_vendor: $(this).data('nm-vendor')
-
+          is_main: $(this).data('is-main')
         });
-
       });
 
       const payload = {
@@ -2200,21 +2077,7 @@ usort($officialSizes, function ($a, $b) {
             msg += '\n\nDetail gagal:\n';
 
             r.failed_detail.forEach(f => {
-
-              const objectName =
-                f.group ??
-                f.komponen ??
-                '-';
-
-              msg +=
-                `- LOT ${f.lot} | SIZE ${f.size} | ${objectName}`;
-
-              if (f.reason) {
-                msg += ` | ${f.reason}`;
-              }
-
-              msg += '\n';
-
+              msg += `- LOT ${f.lot} | SIZE ${f.size} | ${f.komponen}\n`;
             });
           }
 

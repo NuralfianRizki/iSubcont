@@ -646,6 +646,7 @@ usort($officialSizes, function ($a, $b) {
       </h1>
     </div>
 
+
     <section class="section">
       <div class="row">
         <div class="col-lg-12">
@@ -1075,6 +1076,12 @@ usort($officialSizes, function ($a, $b) {
                 autocomplete="off" />
             </div>
 
+            <!-- <button type="button"
+                class="btn btn-primary"
+                onclick="testPrintRPP02N()">
+              TEST PRINT BLUETOOTH
+            </button> -->
+
           </div>
 
           <div class="modal-footer">
@@ -1189,7 +1196,292 @@ usort($officialSizes, function ($a, $b) {
 
   <!-- Barcode Generate -->
   <script src="https://cdn.jsdelivr.net/npm/bwip-js@3.0.9/dist/bwip-js-min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  
+  <script>
+
+  let printerDevice = null;
+  let printerServer = null;
+  let printerCharacteristic = null;
+
+    async function sendBluetoothData(data) {
+      if (!printerCharacteristic) {
+          throw new Error('Printer Bluetooth belum terhubung.');
+      }
+
+      const chunkSize = 20;
+
+      for (let i = 0; i < data.length; i += chunkSize) {
+          const chunk = data.slice(i, i + chunkSize);
+
+          if (printerCharacteristic.properties.writeWithoutResponse) {
+              await printerCharacteristic.writeValueWithoutResponse(chunk);
+          } else {
+              await printerCharacteristic.writeValueWithResponse(chunk);
+          }
+
+          // Beri jeda agar buffer printer tidak penuh.
+          await new Promise(resolve => setTimeout(resolve, 15));
+      }
+    }
+
+    // Ubah canvas BARCODE saja menjadi data raster ESC/POS.
+    // Teks label dikirim sebagai perintah teks printer agar ukuran data jauh lebih kecil.
+    function barcodeCanvasToEscPos(sourceCanvas) {
+      const printWidth = 384; // 48 mm pada 203 DPI
+      const printHeight = Math.max(1, Math.round(sourceCanvas.height * printWidth / sourceCanvas.width));
+      if (printHeight > 65535) throw new Error('Tinggi barcode melebihi batas raster printer.');
+
+      const canvas = document.createElement('canvas');
+      canvas.width = printWidth;
+      canvas.height = printHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, printWidth, printHeight);
+      ctx.drawImage(sourceCanvas, 0, 0, printWidth, printHeight);
+
+      const pixels = ctx.getImageData(0, 0, printWidth, printHeight).data;
+      const widthBytes = Math.ceil(printWidth / 8);
+      const raster = new Uint8Array(widthBytes * printHeight);
+
+      for (let y = 0; y < printHeight; y++) {
+        for (let x = 0; x < printWidth; x++) {
+          const i = (y * printWidth + x) * 4;
+          const gray = (pixels[i] * 299 + pixels[i + 1] * 587 + pixels[i + 2] * 114) / 1000;
+          if (gray < 160) raster[y * widthBytes + Math.floor(x / 8)] |= (0x80 >> (x % 8));
+        }
+      }
+
+      const header = new Uint8Array([
+        0x1D, 0x76, 0x30, 0x00,
+        widthBytes & 0xFF, (widthBytes >> 8) & 0xFF,
+        printHeight & 0xFF, (printHeight >> 8) & 0xFF
+      ]);
+      const result = new Uint8Array(header.length + raster.length);
+      result.set(header, 0);
+      result.set(raster, header.length);
+      return result;
+    }
+
+    function printerTextBytes(value) {
+      // ESC/POS text mode umumnya memakai code page 8-bit, bukan UTF-8.
+      // Normalisasi karakter agar teks tidak berubah menjadi simbol acak.
+      const text = String(value ?? '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[–—]/g, '-').replace(/[“”]/g, '"').replace(/[‘’]/g, "'")
+        .replace(/[^\x20-\x7E\n\r\t]/g, '?');
+      return new TextEncoder().encode(text);
+    }
+
+    function concatPrintBytes(parts) {
+      const total = parts.reduce((sum, part) => sum + part.length, 0);
+      const output = new Uint8Array(total);
+      let offset = 0;
+      for (const part of parts) { output.set(part, offset); offset += part.length; }
+      return output;
+    }
+
+    function escPosText(value) { return printerTextBytes(value + '\n'); }
+    function escPosCommand(...bytes) { return new Uint8Array(bytes); }
+
+    async function printHybridLabel(label, bwipjs) {
+      const parts = [];
+      const cmd = (...bytes) => parts.push(new Uint8Array(bytes));
+      const text = value => parts.push(printerTextBytes(String(value ?? '') + '\n'));
+      const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+      const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[char]);
+
+      // 1. HEADER: HTML/CSS dirender menjadi bitmap untuk printer.
+      const header = document.createElement('div');
+      header.style.cssText = `
+        position: fixed; left: -10000px; top: 0;
+        width: 384px; box-sizing: border-box;
+        padding: 14px 20px 12px;
+        background: #ffffff; color: #000000;
+        font-family: Arial, sans-serif;
+      `;
+
+      const lotVendor = [
+        label.lot_range ? `LOT ${label.lot_range}` : '',
+        label.nm_vendor || ''
+      ].filter(Boolean).join(' | ');
+
+      const mainComponentName = clean(
+        label.nm_main_input || label.main_component ||
+        label.main_component_name || label.nm_group || ''
+      );
+
+      header.innerHTML = `
+        <div style="display:grid;grid-template-columns:115px minmax(0,1fr);column-gap:12px;align-items:start;">
+          <div style="text-align:center;">
+            <div style="font-size:48px;font-weight:700;line-height:1.18;">${escapeHtml(label.size)}</div>
+            <div style="font-size:48px;font-weight:700;line-height:1.18;margin-top:8px;">${escapeHtml(label.total_qty)}</div>
+          </div>
+          <div style="min-width:0;font-size:22px;font-weight:700;line-height:1.35;overflow-wrap:anywhere;">
+            <div>${escapeHtml([clean(label.bucket), clean(label.ncvs)].filter(Boolean).join(' - '))}</div>
+            <div>${escapeHtml(label.model)}</div>
+            <div>${escapeHtml(label.style)}</div>
+          </div>
+        </div>
+        ${lotVendor ? `<div style="margin-top:14px;font-size:22px;font-weight:700;line-height:1.35;overflow-wrap:anywhere;">${escapeHtml(lotVendor)}</div>` : ''}
+        ${mainComponentName ? `<div style="margin-top:14px;font-size:27px;font-weight:700;line-height:1.3;overflow-wrap:anywhere;">${escapeHtml(mainComponentName)}</div>` : ''}
+      `;
+
+      document.body.appendChild(header);
+      try {
+        if (document.fonts && document.fonts.ready) await document.fonts.ready;
+        const headerCanvas = await html2canvas(header, {
+          backgroundColor: '#ffffff', scale: 2,
+          logging: false, useCORS: true
+        });
+        cmd(0x1B, 0x40);
+        cmd(0x1B, 0x61, 0x00);
+        parts.push(barcodeCanvasToEscPos(headerCanvas));
+      } finally {
+        header.remove();
+      }
+
+      // Garis pemisah Header dan Body
+      cmd(0x1B, 0x4D, 0x01); // Font B
+      cmd(0x1B, 0x61, 0x00); // Rata kiri
+      text('-'.repeat(42));
+
+      // 2. BODY: daftar komponen dicetak sebagai teks ESC/POS biasa.
+      cmd(0x1B, 0x61, 0x00);
+      cmd(0x1B, 0x4D, 0x00);
+      cmd(0x1B, 0x21, 0x00);
+      cmd(0x1B, 0x45, 0x00);
+
+      const components = Array.isArray(label.group_components) ? label.group_components : [];
+      const COMPONENT_COLS = 30;
+
+      const wrapComponent = value => {
+        const normalized = clean(value);
+        if (!normalized) return [];
+        const words = normalized.split(' ');
+        const lines = [];
+        let line = '';
+
+        words.forEach(word => {
+          if (word.length > COMPONENT_COLS) {
+            if (line) { lines.push(line); line = ''; }
+            for (let i = 0; i < word.length; i += COMPONENT_COLS) {
+              lines.push(word.slice(i, i + COMPONENT_COLS));
+            }
+            return;
+          }
+          const candidate = line ? `${line} ${word}` : word;
+          if (candidate.length <= COMPONENT_COLS) line = candidate;
+          else {
+            if (line) lines.push(line);
+            line = word;
+          }
+        });
+        if (line) lines.push(line);
+        return lines;
+      };
+
+      components.forEach(component => {
+        wrapComponent(component).forEach(line => text('  ' + line));
+      });
+      
+      // Garis pemisah Body dan Footer
+      cmd(0x1B, 0x4D, 0x01); // Font B
+      cmd(0x1B, 0x61, 0x00); // Rata kiri
+      text('-'.repeat(42));
+
+      // 3. FOOTER: barcode Code128 sebagai gambar, nomor sebagai teks.
+      const barcodeCanvas = document.createElement('canvas');
+      bwipjs.toCanvas(barcodeCanvas, {
+        bcid: 'code128',
+        text: String(label.barcode),
+        scale: 2,
+        height: 8,
+        includetext: false,
+        backgroundcolor: 'FFFFFF'
+      });
+
+      cmd(0x1B, 0x61, 0x01);
+      parts.push(barcodeCanvasToEscPos(barcodeCanvas));
+      cmd(0x1B, 0x4D, 0x00);
+      cmd(0x1B, 0x21, 0x00);
+      cmd(0x1B, 0x45, 0x00);
+      text(String(label.barcode));
+
+      cmd(0x1B, 0x61, 0x00);
+      cmd(0x1B, 0x32);
+      text('');
+
+      await sendBluetoothData(concatPrintBytes(parts));
+    }
+
+  // async function testPrintRPP02N() {
+  //   try {
+  //       if (!printerCharacteristic) {
+  //           throw new Error('Printer belum terhubung.');
+  //       }
+
+  //       const encoder = new TextEncoder();
+
+  //       const init = new Uint8Array([0x1B, 0x40]);
+
+  //       const text = encoder.encode(
+  //           'ISUBCONT\n' +
+  //           'BLUETOOTH PRINT TEST\n' +
+  //           'RONGTA RPP02N\n' +
+  //           '--------------------------\n' +
+  //           'Printer BLE berhasil!\n\n\n'
+  //       );
+
+  //       const data = new Uint8Array([
+  //           ...init,
+  //           ...text
+  //       ]);
+
+  //       await sendBluetoothData(data);
+
+  //       alert('Data tes berhasil dikirim ke printer.');
+
+  //   } catch (error) {
+  //       console.error('Gagal mencetak:', error);
+  //       alert('Gagal mencetak: ' + error.message);
+  //   }
+  // }
+
+
+  const PRINTER_SERVICE_UUID =
+      '000018f0-0000-1000-8000-00805f9b34fb';
+
+  const PRINTER_CHARACTERISTIC_UUID =
+      '00002af1-0000-1000-8000-00805f9b34fb';
+
+  async function connectBluetoothPrinter(device) {
+      printerDevice = device;
+
+      printerServer = await device.gatt.connect();
+
+      printerCharacteristic = await (
+          await printerServer.getPrimaryService(PRINTER_SERVICE_UUID)
+      ).getCharacteristic(PRINTER_CHARACTERISTIC_UUID);
+      console.log('Printer:', device.name);
+      console.log('Service UUID:', PRINTER_SERVICE_UUID);
+      console.log('Characteristic UUID:', PRINTER_CHARACTERISTIC_UUID);
+      console.log('Characteristic properties:', printerCharacteristic.properties);
+
+      if (
+          !printerCharacteristic.properties.write &&
+          !printerCharacteristic.properties.writeWithoutResponse
+      ) {
+          throw new Error('Characteristic printer tidak mendukung pengiriman data.');
+      }
+
+      console.log('Printer Bluetooth terhubung:', device.name);
+  }
+  </script>
 
   <script>
     $(function() {
@@ -1940,6 +2232,27 @@ usort($officialSizes, function ($a, $b) {
           .show();
       }
     }
+    window.onBluetoothPrintCompleted = function() {
+        const modal = bootstrap.Modal.getOrCreateInstance(
+            document.getElementById('modalPrintResult')
+        );
+
+        modal.show();
+
+        showSuccess('Data label berhasil dikirim ke printer Bluetooth. Periksa hasil cetaknya.');
+    };
+
+    window.onBluetoothPrintFailed = function(message) {
+        console.error('Pencetakan gagal:', message);
+
+        const modal = bootstrap.Modal.getOrCreateInstance(
+            document.getElementById('modalPrintResult')
+        );
+
+        modal.show();
+
+        showError('Pengiriman label gagal: ' + message);
+    };
 
     // Fokus input setiap kali modal tapping selesai ditampilkan.
     // Daftarkan sekali saja, di luar fungsi showTappingSettingModal().
@@ -2060,9 +2373,6 @@ usort($officialSizes, function ($a, $b) {
         },
 
         error: function(xhr, status, error) {
-          if (reservedPrintWindow && !reservedPrintWindow.closed) {
-            reservedPrintWindow.close();
-          }
 
           console.error('Tapping validation error:', error);
           console.error('Server response:', xhr.responseText);
@@ -2125,22 +2435,23 @@ usort($officialSizes, function ($a, $b) {
           (tappingMode === 'PLAN' && tappingStage === 'USER') ||
           (tappingMode === 'CUSTOM' && tappingStage === 'LEADER');
 
-        let reservedPrintWindow = null;
+        let printerSelectionPromise = null;
 
         if (isFinalTapping) {
-          reservedPrintWindow = window.open(
-            '',
-            '_blank',
-            'width=500,height=600'
-          );
+            if (!navigator.bluetooth) {
+                alert('Browser tidak mendukung Web Bluetooth. Gunakan Chrome atau Edge melalui HTTPS/localhost.');
+                return;
+            }
 
-          if (!reservedPrintWindow) {
-            alert(
-              'Jendela cetak diblokir browser. ' +
-              'Izinkan pop-up untuk aplikasi ini.'
-            );
-            return;
-          }
+            // Dipanggil langsung saat RFID terakhir ditekan.
+            printerSelectionPromise = navigator.bluetooth.requestDevice({
+                acceptAllDevices: true,
+                optionalServices: [
+                    PRINTER_SERVICE_UUID,
+                    '00001800-0000-1000-8000-00805f9b34fb',
+                    '00001801-0000-1000-8000-00805f9b34fb'
+                ]
+            });
         }
 
         tappingValidationInProgress = true;
@@ -2164,9 +2475,6 @@ usort($officialSizes, function ($a, $b) {
 
           success: function(res) {
             if (res.status !== 'success') {
-              if (reservedPrintWindow && !reservedPrintWindow.closed) {
-                reservedPrintWindow.close();
-              }
 
               $message
                 .removeClass('d-none alert-success alert-info')
@@ -2222,63 +2530,33 @@ usort($officialSizes, function ($a, $b) {
                 action: 'get-print-labels'
               },
 
-              success: function(printRes) {
-                if (printRes.status !== 'success') {
-                  if (reservedPrintWindow && !reservedPrintWindow.closed) {
-                    reservedPrintWindow.close();
-                  }
+              success: async function(printRes) {
+                try {
+                    if (printRes.status !== 'success') {
+                        throw new Error(printRes.message || 'Gagal mengambil data label.');
+                    }
 
-                  $message
-                    .removeClass('alert-success')
-                    .addClass('alert-danger')
-                    .text(
-                      printRes.message ||
-                      'Gagal mengambil data label untuk dicetak.'
-                    );
+                    const labels = printRes.labels || [];
+                    if (labels.length === 0) {
+                        throw new Error('Tidak ada label yang siap dicetak.');
+                    }
+                    pendingPrintBarcodes = [...new Map(labels.map(x => [String(x.barcode || ''), x])).values()]
+                      .map(x => String(x.barcode || '')).filter(Boolean);
 
-                  return;
+                    const device = await printerSelectionPromise;
+
+                    await connectBluetoothPrinter(device);
+
+                    console.log('Printer siap. Mulai mencetak', labels.length, 'label.');
+                    await printSessionLabels(labels);
+                    $('#tapping-validation-message').text('Data label berhasil dikirim ke printer. Konfirmasi hasil cetak pada dialog berikutnya.');
+                } catch (error) {
+                    console.error('Bluetooth printer/print error:', error);
+                    window.onBluetoothPrintFailed(error.message || String(error));
+                    $('#tapping-validation-message').removeClass('alert-success alert-info').addClass('alert-danger').text('Cetak Bluetooth gagal: ' + (error.message || error));
+                    $('#tapping-user-id').prop('disabled', false).val('').trigger('focus');
                 }
-
-                const labels = printRes.labels || [];
-
-                console.log('Data label dari backend:', labels);
-                console.table(labels);
-
-                if (labels.length === 0) {
-                  if (reservedPrintWindow && !reservedPrintWindow.closed) {
-                    reservedPrintWindow.close();
-                  }
-
-                  $message
-                    .removeClass('alert-success')
-                    .addClass('alert-danger')
-                    .text('Tidak ada label yang siap dicetak.');
-
-                  return;
-                }
-
-                if (!reservedPrintWindow || reservedPrintWindow.closed) {
-                  $message
-                    .removeClass('alert-success')
-                    .addClass('alert-danger')
-                    .text(
-                      'Jendela cetak tertutup. ' +
-                      'Silakan buka kembali proses cetak.'
-                    );
-
-                  return;
-                }
-
-                printSessionLabels(labels, reservedPrintWindow);
-
-                $message
-                  .removeClass('alert-danger')
-                  .addClass('alert-success')
-                  .text(
-                    'Dialog cetak telah dibuka. ' +
-                    'Selesaikan proses cetak pada jendela tersebut.'
-                  );
-              },
+            },
 
 
               error: function(xhr, status, error) {
@@ -2286,10 +2564,6 @@ usort($officialSizes, function ($a, $b) {
                 console.error('AJAX status:', status);
                 console.error('Error:', error);
                 console.error('Response server:', xhr.responseText);
-
-                if (reservedPrintWindow && !reservedPrintWindow.closed) {
-                  reservedPrintWindow.close();
-                }
 
                 let message = 'Gagal mengambil data label.';
 
@@ -2334,7 +2608,6 @@ usort($officialSizes, function ($a, $b) {
         });
       });
 
-    let printWindow = null;
     let pendingPrintBarcodes = [];
 
     function escapePrintHtml(value) {
@@ -2348,25 +2621,7 @@ usort($officialSizes, function ($a, $b) {
         } [char];
       });
     }
-
-    // Dipanggil setelah dialog cetak ditutup.
-    window.onPrintDialogClosed = function() {
-      if (printWindow && !printWindow.closed) {
-        printWindow.close();
-      }
-
-      printWindow = null;
-
-      if (pendingPrintBarcodes.length > 0) {
-        const modal = bootstrap.Modal.getOrCreateInstance(
-          document.getElementById('modalPrintResult')
-        );
-
-        modal.show();
-      }
-    };
-
-    async function submitPrintResult(status) {
+async function submitPrintResult(status) {
       if (pendingPrintBarcodes.length === 0) {
         showError('Tidak ada barcode yang menunggu konfirmasi.');
         return;
@@ -2449,326 +2704,66 @@ usort($officialSizes, function ($a, $b) {
       submitPrintResult('FAILED');
     });
 
-    function printSessionLabels(labels, targetWindow) {
-      if (!Array.isArray(labels) || labels.length === 0) {
-        targetWindow.close();
-        alert('Tidak ada label yang siap dicetak.');
-        return;
-      }
-
-      printWindow = targetWindow;
-
-      // Satu label untuk setiap barcode unik.
-      const uniqueLabels = [
-        ...new Map(labels.map(label => [label.barcode, label])).values()
-      ];
-
-      pendingPrintBarcodes = uniqueLabels.map(label => label.barcode);
-
-
-      const labelHtml = uniqueLabels.map(label => {
-        const components = (
-          Array.isArray(label.group_components) ?
-          label.group_components : []
-        ).filter(component => String(component ?? '').trim() !== '');
-
-        const mainComponentHtml = `
-  <div class="main-component">
-    ${escapePrintHtml(label.main_component)}
-  </div>
-`;
-
-        const componentRows = components.map(component => `
-  <div class="component-row">
-    ${escapePrintHtml(component)}
-  </div>
-`).join('');
-
-        return `
-    <section class="label">
-      <div class="top-section">
-        <div class="size-qty">
-          <div class="size">${escapePrintHtml(label.size)}</div>
-          <div class="fraction-line"></div>
-          <div class="qty">${escapePrintHtml(label.total_qty)}</div>
-        </div>
-
-        <div class="product-info">
-          <div class="bucket-ncvs">
-            ${escapePrintHtml(label.bucket)} - ${escapePrintHtml(label.ncvs)}
-          </div>
-          <div class="model">${escapePrintHtml(label.model)}</div>
-          <div class="style">${escapePrintHtml(label.style)}</div>
-        </div>
-      </div>
-
-      <div class="lot-vendor">
-  ${label.lot_range
-    ? 'LOT ' + escapePrintHtml(label.lot_range)
-    : ''}
-  ${label.nm_vendor
-    ? ' | ' + escapePrintHtml(label.nm_vendor)
-    : ''}
-</div>
-
-      ${mainComponentHtml}
-
-<div class="component-list">
-  ${componentRows}
-</div>
-
-      <div class="barcode-wrap">
-        <canvas class="barcode"
-          data-barcode="${escapePrintHtml(label.barcode)}"></canvas>
-        <div class="barcode-text">
-          ${escapePrintHtml(label.barcode)}
-        </div>
-      </div>
-    </section>
-  `;
-      }).join('');
-
-      targetWindow.document.open();
-      targetWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-        
-<head>
-    <meta charset="UTF-8">
-    <title>Print Barcode</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/bwip-js/4.11.4/bwip-js-min.js"><\/script>
-  <style>
-    
-@page {
-    size: 48mm auto;
-    margin: 0;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  margin: 0;
-  padding: 0;
-  font-family: Arial, sans-serif;
-}
-
-.label {
-    box-sizing: border-box;
-    width: 48mm;
-    height: auto;
-    min-height: 40mm;
-    padding: 1.5mm;
-    display: flex;
-    flex-direction: column;
-    page-break-after: always;
-    break-after: page;
-}
-
-.label:last-child {
-  page-break-after: auto;
-  break-after: auto;
-}
-
-.top-section {
-  display: grid;
-  grid-template-columns: 15mm minmax(0, 1fr);
-  gap: 3mm;
-  align-items: start;
-}
-
-.size-qty {
-  text-align: center;
-  font-weight: bold;
-  line-height: 1.05;
-}
-
-.size {
-  font-size: 17pt;
-}
-
-.fraction-line {
-  border-top: 1px solid #000;
-  margin: 1mm 0;
-}
-
-.qty {
-  font-size: 17pt;
-}
-
-.product-info {
-  min-width: 0;
-  font-size: 10pt;
-  font-weight: bold;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-
-.bucket-ncvs {
-  font-size: 10pt;
-}
-
-.model,
-.style {
-  overflow-wrap: anywhere;
-}
-
-.lot-vendor {
-  margin-top: 3mm;
-  margin-bottom: 2mm;
-  font-size: 9pt;
-  font-weight: bold;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-
-.component-list {
-  width: 100%;
-  border-top: 1px solid #000;
-  border-left: 1px solid #000;
-  border-right: 1px solid #000;
-}
-
-.component-row {
-  padding: 1.2mm 2mm;
-  border-bottom: 1px solid #000;
-  font-size: 7.5pt;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-  white-space: normal;
-  break-inside: avoid;
-}
-
-.barcode-wrap {
-  margin-top: 2mm;
-  width: 100%;
-  text-align: center;
-  break-inside: avoid;
-}
-
-.barcode {
-  display: block;
-  width: 100%;
-  height: 10mm;
-  object-fit: contain;
-  margin: 0 auto;
-}
-
-.barcode-text {
-  font-size: 7pt;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-
-@media screen {
-  .label {
-    border: 1px dashed #aaa;
-    margin-bottom: 4mm;
-  }
-}
-
-.main-component {
-  font-size: 8pt;
-  font-weight: bold;
-  line-height: 1.15;
-  margin-bottom: 1mm;
-  overflow-wrap: anywhere;
-}
-
-.component-list {
-  width: 100%;
-  border-top: 1px solid #000;
-  border-left: 1px solid #000;
-  border-right: 1px solid #000;
-}
-
-.component-row {
-  padding: 0.7mm 1.5mm;
-  border-bottom: 1px solid #000;
-  font-size: 5.5pt;
-  font-weight: normal;
-  line-height: 1.1;
-  overflow-wrap: anywhere;
-  white-space: normal;
-  break-inside: avoid;
-}
-
-  </style>
-  </head>
-
-  <body>
-    ${labelHtml}
-    <script>
-     
-function renderAndPrintLabels() {
-  const barcodeLibrary = window.bwipjs;
-  const canvases = document.querySelectorAll('canvas.barcode');
-
-  console.log('bwipjs tersedia:', !!barcodeLibrary);
-  console.log('Jumlah barcode:', canvases.length);
-
-  if (!barcodeLibrary || typeof barcodeLibrary.toCanvas !== 'function') {
-    console.error('Library bwip-js tidak tersedia.');
-    alert('Library barcode tidak tersedia. Periksa koneksi internet.');
-    return;
-  }
-
-  if (canvases.length === 0) {
-    console.error('Elemen canvas barcode tidak ditemukan.');
-    alert('Tidak ada elemen barcode yang dapat dicetak.');
-    return;
-  }
-
-  try {
-    canvases.forEach(function(canvas) {
-      const barcodeValue = canvas.dataset.barcode;
-
-      if (!barcodeValue) {
-        throw new Error('Nilai barcode kosong.');
-      }
-
-      barcodeLibrary.toCanvas(canvas, {
-        bcid: 'code128',
-        text: barcodeValue,
-        scale: 2,
-        height: 8,
-        includetext: false
+    // Pastikan library render label tersedia. Jika CDN utama gagal dimuat,
+    // coba alamat alternatif sebelum proses cetak dibatalkan.
+    function loadPrintLibrary(url, globalName) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-print-library="' + globalName + '"]');
+        if (existing && window[globalName]) { resolve(window[globalName]); return; }
+        const script = document.createElement('script');
+        script.src = url;
+        script.async = true;
+        script.dataset.printLibrary = globalName;
+        script.onload = () => window[globalName]
+          ? resolve(window[globalName])
+          : reject(new Error(globalName + ' tidak ditemukan setelah dimuat.'));
+        script.onerror = () => reject(new Error('Gagal memuat ' + globalName + ' dari ' + url));
+        document.head.appendChild(script);
       });
-    });
-
-    console.log('Semua barcode berhasil dibuat.');
-
-    setTimeout(function() {
-      window.focus();
-      window.print();
-    }, 500);
-
-  } catch (error) {
-    console.error('Gagal membuat barcode:', error);
-    alert('Gagal membuat barcode: ' + (error.message || error));
-  }
-}
-     
-if (document.readyState === 'complete') {
-  renderAndPrintLabels();
-} else {
-  window.addEventListener('load', renderAndPrintLabels, { once: true });
-}
-
-window.addEventListener('afterprint', function() {
-  if (window.opener && !window.opener.closed) {
-    window.opener.onPrintDialogClosed();
-  }
-});
-<\/script>
-</body>
-</html>
-      `);
-
-      targetWindow.document.close();
     }
+
+    async function ensureBarcodeLibrary() {
+      let lib = window.bwipjs || window.bwipJS;
+      const errors = [];
+      if (!lib) {
+        for (const url of [
+          'https://cdn.jsdelivr.net/npm/bwip-js@4.5.1/dist/bwip-js-min.js',
+          'https://unpkg.com/bwip-js@4.5.1/dist/bwip-js-min.js'
+        ]) {
+          try { lib = await loadPrintLibrary(url, 'bwipjs'); break; }
+          catch (e) { errors.push(e.message); }
+        }
+      }
+      lib = lib || window.bwipjs || window.bwipJS;
+      if (!lib || typeof lib.toCanvas !== 'function') {
+        throw new Error('Library barcode Code128 tidak tersedia. ' + errors.join(' | '));
+      }
+      return lib;
+    }
+
+    async function printSessionLabels(labels) {
+      if (!Array.isArray(labels) || labels.length === 0) {
+        throw new Error('Tidak ada label yang siap dicetak.');
+      }
+      const bwipjs = await ensureBarcodeLibrary();
+      const uniqueLabels = [...new Map(labels.map(x => [String(x.barcode || ''), x])).values()]
+        .filter(x => String(x.barcode || '').trim() !== '');
+      if (!uniqueLabels.length) throw new Error('Data barcode kosong.');
+
+      pendingPrintBarcodes = uniqueLabels.map(x => String(x.barcode));
+      try {
+        for (let i = 0; i < uniqueLabels.length; i++) {
+          await printHybridLabel(uniqueLabels[i], bwipjs);
+          // Jeda pendek antar-label agar mekanisme feed printer stabil.
+          if (i < uniqueLabels.length - 1) await new Promise(resolve => setTimeout(resolve, 120));
+        }
+        window.onBluetoothPrintCompleted();
+      } catch (error) {
+        window.onBluetoothPrintFailed(error.message || String(error));
+        throw error;
+      }
+    }
+
   </script>
 
 
