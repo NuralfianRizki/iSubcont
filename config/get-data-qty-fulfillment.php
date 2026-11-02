@@ -196,61 +196,84 @@ try {
         $length = 20;
     }
 
+
     $baseSql = "
+    SELECT
+        bucket,
+        model,
+        style,
+        ncvs,
+        SUM(qty_debt) AS total_remaining
+    FROM (
         SELECT
+            job_order,
+            po_code,
+            po_item,
             bucket,
             model,
             style,
             ncvs,
-            SUM(qty_debt) AS total_remaining
-        FROM (
-            SELECT
-                job_order,
-                po_code,
-                po_item,
-                bucket,
-                model,
-                style,
-                ncvs,
-                lot,
-                size,
-                GREATEST(
-    MAX(
-        COALESCE(
-            CAST(NULLIF(qty_plan, '') AS DECIMAL(10,2)),
-            0
-        )
-    )
-    -
-    SUM(
-        COALESCE(
-            CAST(NULLIF(qty_pre_setting, '') AS DECIMAL(10,2)),
-            0
-        )
-    ),
-    0
-) AS qty_debt
-            FROM tbl_transactions
-            WHERE mode = 'CUSTOM'
-              AND (? = '' OR ncvs = ?)
-            GROUP BY
-                job_order,
-                po_code,
-                po_item,
-                bucket,
-                model,
-                style,
-                ncvs,
-                lot,
-                size
-            HAVING qty_debt > 0
-        ) AS source_debts
+            lot,
+            size,
+            id_komponen_in,
+            nm_komponen_in,
+            id_komponen_out,
+            nm_komponen_out,
+            id_group,
+            id_vendor,
+            nm_vendor,
+
+            GREATEST(
+                MAX(
+                    COALESCE(
+                        CAST(NULLIF(qty_plan, '') AS DECIMAL(10,2)),
+                        0
+                    )
+                )
+                -
+                SUM(
+                    COALESCE(
+                        CAST(NULLIF(qty_pre_setting, '') AS DECIMAL(10,2)),
+                        0
+                    )
+                ),
+                0
+            ) AS qty_debt
+
+        FROM tbl_transactions
+
+        WHERE mode = 'CUSTOM'
+          AND last_gate = 'PRE_SETTING'
+          AND barcode_status = 'ACTIVE'
+          AND (? = '' OR ncvs = ?)
+
         GROUP BY
+            job_order,
+            po_code,
+            po_item,
             bucket,
             model,
             style,
-            ncvs
-    ";
+            ncvs,
+            lot,
+            size,
+            id_komponen_in,
+            nm_komponen_in,
+            id_komponen_out,
+            nm_komponen_out,
+            id_group,
+            id_vendor,
+            nm_vendor
+
+        HAVING qty_debt > 0
+    ) AS source_debts
+
+    GROUP BY
+        bucket,
+        model,
+        style,
+        ncvs
+";
 
     // 1. Total kelompok sebelum pencarian.
     $countSql = "

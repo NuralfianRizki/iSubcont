@@ -4445,6 +4445,171 @@ if (
     exit;
 }
 
+function getGroupComponentsByMain(
+    mysqli $conn,
+    int $idMainComponent,
+    string $model,
+    string $style
+): array {
+    $sql = "
+        SELECT DISTINCT
+            c.id_komponen,
+            c.nama_komponen
+        FROM tbl_komponen_proses cp
+        INNER JOIN tbl_komponen c
+            ON c.id_komponen = cp.id_input
+        WHERE cp.id_group = (
+            SELECT cp_main.id_group
+            FROM tbl_komponen_proses cp_main
+            INNER JOIN tbl_komponen c_main
+                ON c_main.id_komponen = cp_main.id_input
+            WHERE cp_main.id_input = ?
+              AND cp_main.is_main = 1
+              AND c_main.model = ?
+              AND c_main.style = ?
+              AND c_main.is_deleted = 0
+            LIMIT 1
+        )
+          AND cp.id_input <> ?
+          AND c.model = ?
+          AND c.style = ?
+          AND c.is_deleted = 0
+        ORDER BY c.id_komponen
+    ";
+
+    $stmt = $conn->prepare($sql);
+
+    if (!$stmt) {
+        throw new RuntimeException(
+            'Gagal menyiapkan query grup komponen: ' . $conn->error
+        );
+    }
+
+    $stmt->bind_param(
+        'ississ',
+        $idMainComponent,
+        $model,
+        $style,
+        $idMainComponent,
+        $model,
+        $style
+    );
+
+    if (!$stmt->execute()) {
+        $error = $stmt->error;
+        $stmt->close();
+
+        throw new RuntimeException(
+            'Gagal mengambil grup komponen: ' . $error
+        );
+    }
+
+    $result = $stmt->get_result();
+    $components = [];
+
+    while ($row = $result->fetch_assoc()) {
+        $components[] = $row['nama_komponen'];
+    }
+
+    $stmt->close();
+
+    return $components;
+}
+
+function aggregateFulfillmentLabels(array $labels): array
+{
+    $grouped = [];
+
+    foreach ($labels as $label) {
+        $barcode = (string) ($label['barcode'] ?? '');
+
+        if ($barcode === '') {
+            continue;
+        }
+
+        if (!isset($grouped[$barcode])) {
+            $grouped[$barcode] = $label;
+            $grouped[$barcode]['total_qty'] = 0;
+            $grouped[$barcode]['_lots'] = [];
+        }
+
+        // Jumlahkan quantity dari semua transaksi dengan barcode sama.
+        $grouped[$barcode]['total_qty'] +=
+            (float) ($label['total_qty'] ?? 0);
+
+        // Simpan lot unik untuk dirangkum setelah seluruh data terkumpul.
+        $lot = trim((string) ($label['lot_range'] ?? ''));
+
+        if ($lot !== '') {
+            $grouped[$barcode]['_lots'][$lot] = $lot;
+        }
+    }
+
+    foreach ($grouped as &$label) {
+        $lots = array_values($label['_lots']);
+
+        // Urutkan lot secara numerik jika semua lot berupa angka.
+        $allNumeric = count(array_filter(
+            $lots,
+            fn($lot) => preg_match('/^\d+$/', $lot)
+        )) === count($lots);
+
+        if ($allNumeric) {
+            usort($lots, fn($a, $b) => (int)$a <=> (int)$b);
+
+            $ranges = [];
+            $start = null;
+            $end = null;
+
+            foreach ($lots as $lot) {
+                $number = (int)$lot;
+
+                if ($start === null) {
+                    $start = $end = $number;
+                    continue;
+                }
+
+                if ($number === $end) {
+                    continue;
+                }
+
+                if ($number === $end + 1) {
+                    $end = $number;
+                    continue;
+                }
+
+                $ranges[] = $start === $end
+                    ? (string)$start
+                    : $start . ' - ' . $end;
+
+                $start = $end = $number;
+            }
+
+            if ($start !== null) {
+                $ranges[] = $start === $end
+                    ? (string)$start
+                    : $start . ' - ' . $end;
+            }
+
+            $label['lot_range'] = implode(', ', $ranges);
+        } else {
+            // Untuk lot nonnumerik, pertahankan daftar unik tanpa rentang numerik.
+            $label['lot_range'] = implode(', ', $lots);
+        }
+
+        // Qty ditampilkan sebagai bilangan bulat bila memang bulat.
+        $qty = (float)$label['total_qty'];
+        $label['total_qty'] = floor($qty) === $qty
+            ? (int)$qty
+            : $qty;
+
+        unset($label['_lots']);
+    }
+    unset($label);
+
+    return array_values($grouped);
+}
+
 if (
     isset($_POST['action']) &&
     $_POST['action'] === 'save-qty-fulfillment'
@@ -5013,6 +5178,13 @@ if (
                 'barcode' => $barcode
             ];
 
+            $groupComponents = getGroupComponentsByMain(
+                $conn,
+                (int) $idIn,
+                $model,
+                $style
+            );
+
             $labels[] = [
                 'barcode' => $barcode,
                 'bucket' => $bucket,
@@ -5024,10 +5196,7 @@ if (
                 'lot_range' => $lot,
                 'nm_vendor' => $nmVendor,
                 'main_component' => $nmIn ?? '-',
-                'group_components' => array_values(array_filter([
-                    $nmIn,
-                    $nmOut
-                ]))
+                'group_components' => $groupComponents
             ];
 
             $success++;
@@ -5069,6 +5238,7 @@ if (
         mysqli_stmt_execute($logStmt);
         mysqli_stmt_close($logStmt);
 
+
         // =====================================================
         // 8. COMMIT DAN LEPAS LOCK
         // =====================================================
@@ -5088,6 +5258,9 @@ if (
 
             $lockAcquired = false;
         }
+
+        // Agregasi label dilakukan setelah transaksi berhasil.
+        $labels = aggregateFulfillmentLabels($labels);
 
         // Session khusus fulfillment; tidak menggunakan session tapping.
         $_SESSION['qty_fulfillment_print_context'] = [
@@ -5203,48 +5376,103 @@ if (
 
         mysqli_begin_transaction($conn);
 
-        $update = mysqli_prepare(
-            $conn,
-            "UPDATE tbl_transactions
-             SET print_status = ?
-             WHERE barcode = ?
-               AND print_status = 'READY'
-               AND mode = 'CUSTOM'
-               AND last_gate = 'PRE_SETTING'"
-        );
-
-        $updatedRows = 0;
-
-        foreach ($requested as $barcode) {
-            mysqli_stmt_bind_param(
-                $update,
-                'ss',
-                $status,
-                $barcode
+        try {
+            // 1. Hitung semua record yang masih memenuhi syarat.
+            // Satu barcode dapat memiliki beberapa record transaksi.
+            $check = mysqli_prepare(
+                $conn,
+                "SELECT COUNT(*) AS total
+         FROM tbl_transactions
+         WHERE barcode = ?
+           AND print_status = 'READY'
+           AND mode = 'CUSTOM'
+           AND last_gate = 'PRE_SETTING'"
             );
 
-            mysqli_stmt_execute($update);
-            $updatedRows += mysqli_stmt_affected_rows($update);
-        }
-
-        mysqli_stmt_close($update);
-
-        if ($updatedRows !== count($requested)) {
-            throw new RuntimeException(
-                'Sebagian status cetak tidak berubah. Periksa status barcode sebelum mencoba kembali.'
+            // 2. Siapkan update status.
+            $update = mysqli_prepare(
+                $conn,
+                "UPDATE tbl_transactions
+         SET print_status = ?
+         WHERE barcode = ?
+           AND print_status = 'READY'
+           AND mode = 'CUSTOM'
+           AND last_gate = 'PRE_SETTING'"
             );
+
+            $expectedRows = 0;
+            $updatedRows = 0;
+
+            foreach ($requested as $barcode) {
+                // Hitung record yang seharusnya berubah
+                // untuk barcode ini.
+                mysqli_stmt_bind_param($check, 's', $barcode);
+                mysqli_stmt_execute($check);
+
+                $result = mysqli_stmt_get_result($check);
+                $row = mysqli_fetch_assoc($result);
+                $expectedForBarcode = (int) $row['total'];
+
+                if ($expectedForBarcode === 0) {
+                    throw new RuntimeException(
+                        'Barcode ' . $barcode .
+                            ' tidak memiliki record berstatus READY yang memenuhi syarat. ' .
+                            'Periksa status barcode sebelum mencoba kembali.'
+                    );
+                }
+
+                $expectedRows += $expectedForBarcode;
+
+                // Ubah semua record yang memenuhi kondisi.
+                mysqli_stmt_bind_param(
+                    $update,
+                    'ss',
+                    $status,
+                    $barcode
+                );
+
+                mysqli_stmt_execute($update);
+
+                $updatedForBarcode = mysqli_stmt_affected_rows($update);
+
+                if ($updatedForBarcode !== $expectedForBarcode) {
+                    throw new RuntimeException(
+                        'Jumlah record yang berubah tidak sesuai untuk barcode ' .
+                            $barcode . '. Status cetak dibatalkan.'
+                    );
+                }
+
+                $updatedRows += $updatedForBarcode;
+            }
+
+            mysqli_stmt_close($check);
+            mysqli_stmt_close($update);
+
+            // 3. Commit hanya jika seluruh record berhasil diperbarui.
+            if ($updatedRows !== $expectedRows) {
+                throw new RuntimeException(
+                    'Jumlah record yang diperbarui tidak sesuai. Status cetak dibatalkan.'
+                );
+            }
+
+            mysqli_commit($conn);
+
+            echo json_encode([
+                'status' => 'success',
+                'print_status' => $status,
+                'updated_rows' => $updatedRows,
+                'updated_barcodes' => count($requested),
+                'message' => $status === 'PRINTED'
+                    ? 'Label Quantity Fulfillment berhasil dikonfirmasi tercetak.'
+                    : 'Label Quantity Fulfillment ditandai gagal cetak.'
+            ], JSON_UNESCAPED_UNICODE);
+        } catch (Throwable $e) {
+            mysqli_rollback($conn);
+            throw $e;
         }
 
-        mysqli_commit($conn);
+        // Jangan tambahkan echo json_encode() lagi di sini.
 
-        echo json_encode([
-            'status' => 'success',
-            'print_status' => $status,
-            'updated_rows' => $updatedRows,
-            'message' => $status === 'PRINTED'
-                ? 'Label Quantity Fulfillment berhasil dikonfirmasi tercetak.'
-                : 'Label Quantity Fulfillment ditandai gagal cetak.'
-        ], JSON_UNESCAPED_UNICODE);
     } catch (Throwable $e) {
         try {
             mysqli_rollback($conn);
@@ -5261,6 +5489,1489 @@ if (
             'message' => $e instanceof RuntimeException
                 ? $e->getMessage()
                 : 'Gagal memperbarui status cetak fulfillment.'
+        ], JSON_UNESCAPED_UNICODE);
+    }
+
+    exit;
+}
+
+// SCAN IN SM SUBCONT AFTER SETTING COMPONENT
+if (
+    isset($_POST['action']) &&
+    $_POST['action'] === 'scan_in_sm_subcont'
+) {
+    require_once 'gate-helper.php';
+
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    $barcode = trim($_POST['barcode'] ?? '');
+    $scan_by = $_SESSION['username'] ?? 'unknown';
+
+    $redirect = '/isubcont/pages/transaction-in-smsubcont.php';
+
+    if ($barcode === '') {
+        $_SESSION['red_notif'] = 'Barcode tidak boleh kosong.';
+        header("Location: {$redirect}");
+        exit;
+    }
+
+    $transactionStarted = false;
+
+    try {
+        mysqli_begin_transaction($conn);
+        $transactionStarted = true;
+
+        /*
+         * 1. LOCK DAN AMBIL SELURUH ROW BARCODE
+         * Semua row divalidasi sebelum ada perubahan.
+         */
+        $stmt = mysqli_prepare(
+            $conn,
+            "SELECT *
+             FROM tbl_transactions
+             WHERE barcode = ?
+             ORDER BY id_trans ASC
+             FOR UPDATE"
+        );
+
+        if (!$stmt) {
+            throw new Exception(
+                'Gagal menyiapkan query transaksi.'
+            );
+        }
+
+        mysqli_stmt_bind_param($stmt, 's', $barcode);
+        mysqli_stmt_execute($stmt);
+
+        $result = mysqli_stmt_get_result($stmt);
+        $allData = [];
+
+        while ($row = mysqli_fetch_assoc($result)) {
+            $allData[] = $row;
+        }
+
+        mysqli_stmt_close($stmt);
+
+        if (count($allData) === 0) {
+            throw new Exception('Barcode tidak ditemukan.');
+        }
+
+        /*
+         * 2. VALIDASI DUPLICATE SCAN
+         */
+        $stmt = mysqli_prepare(
+            $conn,
+            "SELECT id_event
+             FROM tbl_transaksi_event
+             WHERE barcode = ?
+               AND gate = 'IN_SM_SUBCONT'
+             LIMIT 1"
+        );
+
+        if (!$stmt) {
+            throw new Exception(
+                'Gagal menyiapkan validasi duplicate scan.'
+            );
+        }
+
+        mysqli_stmt_bind_param($stmt, 's', $barcode);
+        mysqli_stmt_execute($stmt);
+
+        $duplicateResult = mysqli_stmt_get_result($stmt);
+        $isDuplicate = mysqli_num_rows($duplicateResult) > 0;
+
+        mysqli_stmt_close($stmt);
+
+        if ($isDuplicate) {
+            throw new Exception(
+                'Barcode sudah pernah di-scan pada proses In SM Subcont.'
+            );
+        }
+
+        /*
+         * 3. VALIDASI SELURUH ROW
+         * Gate asal wajib PRE_SETTING.
+         * Tidak ada validasi parent_barcode / merge.
+         */
+        $expectedGate = 'PRE_SETTING';
+        $processData = [];
+
+        foreach ($allData as $data) {
+            $currentGate = $data['last_gate'] ?? null;
+
+            if (!validateGateSequence($currentGate, $expectedGate)) {
+                $currentLabel = getGateLabel($currentGate);
+                $nextLabel = getNextGateLabel($currentGate);
+
+                throw new Exception(
+                    "Barcode tidak sesuai untuk proses ini. " .
+                        "Posisi terakhir: {$currentLabel}. " .
+                        "Silakan lanjutkan di: {$nextLabel}."
+                );
+            }
+
+            // Hanya komponen utama yang diproses.
+            if ((int)($data['is_main_komponen'] ?? 0) !== 1) {
+                continue;
+            }
+
+            if (
+                $data['qty_pre_setting'] === null ||
+                trim((string)$data['qty_pre_setting']) === ''
+            ) {
+                throw new Exception(
+                    "Qty pre-setting kosong pada transaksi ID {$data['id_trans']}."
+                );
+            }
+
+            // id_trans di tabel event bertipe varchar(10).
+            if (strlen((string)$data['id_trans']) > 10) {
+                throw new Exception(
+                    "ID transaksi {$data['id_trans']} melebihi kapasitas " .
+                        "kolom tbl_transaksi_event.id_trans."
+                );
+            }
+
+            $processData[] = $data;
+        }
+
+        if (count($processData) === 0) {
+            throw new Exception(
+                'Tidak ditemukan transaksi komponen utama untuk barcode ini.'
+            );
+        }
+
+        /*
+         * 4. SIAPKAN QUERY UPDATE
+         */
+        $stmtUpdate = mysqli_prepare(
+            $conn,
+            "UPDATE tbl_transactions
+             SET last_gate = 'IN_SM_SUBCONT',
+                 qty_sm_subcont = ?,
+                 transac_by = ?,
+                 updated_at = NOW()
+             WHERE id_trans = ?"
+        );
+
+        if (!$stmtUpdate) {
+            throw new Exception(
+                'Gagal menyiapkan update transaksi.'
+            );
+        }
+
+        /*
+         * 5. SIAPKAN QUERY INSERT EVENT
+         * Mengikuti kolom yang tersedia pada schema event terbaru.
+         */
+        $stmtEvent = mysqli_prepare(
+            $conn,
+            "INSERT INTO tbl_transaksi_event (
+                id_trans,
+                global_barcode,
+                barcode,
+                id_komponen,
+                nm_komponen,
+                id_group,
+                lot,
+                size,
+                gate,
+                flow_type,
+                qty,
+                transac_by,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())"
+        );
+
+        if (!$stmtEvent) {
+            throw new Exception(
+                'Gagal menyiapkan insert event.'
+            );
+        }
+
+        /*
+         * 6. SIAPKAN QUERY AUDIT LOG
+         */
+        $stmtLog = mysqli_prepare(
+            $conn,
+            "INSERT INTO tlog_transaksi (
+                updated_by,
+                action_type,
+                old_data,
+                new_data,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, NOW(), NOW())"
+        );
+
+        if (!$stmtLog) {
+            throw new Exception(
+                'Gagal menyiapkan audit log.'
+            );
+        }
+
+        /*
+         * 7. PROSES ROW KOMPONEN UTAMA
+         */
+        foreach ($processData as $data) {
+            $idTrans = (string)$data['id_trans'];
+            $qty = (string)$data['qty_pre_setting'];
+
+            // Snapshot data lama untuk audit.
+            $oldData = $data;
+
+            // UPDATE TRANSAKSI.
+            mysqli_stmt_bind_param(
+                $stmtUpdate,
+                'ssi',
+                $qty,
+                $scan_by,
+                $idTrans
+            );
+
+            if (!mysqli_stmt_execute($stmtUpdate)) {
+                throw new Exception(
+                    'Gagal update transaksi: ' .
+                        mysqli_stmt_error($stmtUpdate)
+                );
+            }
+
+            if (mysqli_stmt_affected_rows($stmtUpdate) < 0) {
+                throw new Exception(
+                    'Update transaksi gagal.'
+                );
+            }
+
+            // Snapshot data baru untuk audit.
+            $newData = $oldData;
+            $newData['last_gate'] = 'IN_SM_SUBCONT';
+            $newData['qty_sm_subcont'] = $qty;
+            $newData['transac_by'] = $scan_by;
+
+            /*
+             * Nilai ini merepresentasikan waktu update.
+             * Database tetap menggunakan NOW() untuk data aktual.
+             */
+            $newData['updated_at'] = date('Y-m-d H:i:s');
+
+            // INSERT EVENT.
+            $globalBarcode = $data['global_barcode'] ?? null;
+            $eventBarcode = (string)($data['barcode'] ?? '');
+            $idKomponen = (string)($data['id_komponen_in'] ?? '');
+            $namaKomponen = (string)($data['nm_komponen_in'] ?? '');
+            $idGroup = (string)($data['id_group'] ?? '');
+            $lot = (string)($data['lot'] ?? '');
+            $size = (string)($data['size'] ?? '');
+            $eventGate = 'IN_SM_SUBCONT';
+            $flowType = 'IN';
+
+            mysqli_stmt_bind_param(
+                $stmtEvent,
+                'ssssssssssss',
+                $idTrans,
+                $globalBarcode,
+                $eventBarcode,
+                $idKomponen,
+                $namaKomponen,
+                $idGroup,
+                $lot,
+                $size,
+                $eventGate,
+                $flowType,
+                $qty,
+                $scan_by
+            );
+
+            if (!mysqli_stmt_execute($stmtEvent)) {
+                throw new Exception(
+                    'Gagal menyimpan event: ' .
+                        mysqli_stmt_error($stmtEvent)
+                );
+            }
+
+            // INSERT AUDIT LOG.
+            $oldJson = json_encode(
+                $oldData,
+                JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR
+            );
+
+            $newJson = json_encode(
+                $newData,
+                JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR
+            );
+
+            if ($oldJson === false || $newJson === false) {
+                throw new Exception(
+                    'Gagal membuat data audit log.'
+                );
+            }
+
+            $actionType = 'IN_SM_SUBCONT';
+
+            mysqli_stmt_bind_param(
+                $stmtLog,
+                'ssss',
+                $scan_by,
+                $actionType,
+                $oldJson,
+                $newJson
+            );
+
+            if (!mysqli_stmt_execute($stmtLog)) {
+                throw new Exception(
+                    'Gagal menyimpan audit log: ' .
+                        mysqli_stmt_error($stmtLog)
+                );
+            }
+        }
+
+        mysqli_stmt_close($stmtUpdate);
+        mysqli_stmt_close($stmtEvent);
+        mysqli_stmt_close($stmtLog);
+
+        /*
+         * 8. COMMIT
+         */
+        mysqli_commit($conn);
+        $transactionStarted = false;
+
+        $_SESSION['green_notif'] =
+            "Transaksi berhasil. Barcode {$barcode} " .
+            "telah masuk ke proses In SM Subcont.";
+
+        header(
+            "Location: {$redirect}?success=" . urlencode($barcode)
+        );
+        exit;
+    } catch (Throwable $e) {
+        if ($transactionStarted) {
+            mysqli_rollback($conn);
+        }
+
+        $_SESSION['red_notif'] =
+            'Gagal: ' . $e->getMessage();
+
+        header("Location: {$redirect}");
+        exit;
+    }
+}
+
+// GENERATE GLOBAL BARCODE - READY TO SHIP
+if (
+    isset($_POST['action']) &&
+    $_POST['action'] === 'generate_ready_to_ship'
+) {
+
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    header('Content-Type: application/json; charset=utf-8');
+
+    $transactionStarted = false;
+    $lockAcquired = false;
+    $lockName = null;
+
+    try {
+
+        /*
+         * 1. VALIDASI SESSION USER
+         */
+        if (empty($_SESSION['nik_user'])) {
+            throw new Exception('Sesi login tidak ditemukan.');
+        }
+
+        $nik = trim((string) $_SESSION['nik_user']);
+
+        /*
+         * 2. AMBIL NCVS USER
+         */
+        $stmtUser = mysqli_prepare(
+            $conn,
+            "SELECT ncvs
+             FROM tbl_user
+             WHERE nik_user = ?
+               AND is_deleted = 0
+             LIMIT 1"
+        );
+
+        if (!$stmtUser) {
+            throw new Exception('Gagal memvalidasi user.');
+        }
+
+        mysqli_stmt_bind_param($stmtUser, 's', $nik);
+        mysqli_stmt_execute($stmtUser);
+
+        $userResult = mysqli_stmt_get_result($stmtUser);
+        $userData = mysqli_fetch_assoc($userResult);
+
+        mysqli_stmt_close($stmtUser);
+
+        if (!$userData) {
+            throw new Exception('User tidak valid atau sudah tidak aktif.');
+        }
+
+        $userNcvs = trim((string) ($userData['ncvs'] ?? ''));
+
+        /*
+         * 3. AMBIL BARCODE TERPILIH
+         */
+        $barcodesJson = $_POST['barcodes'] ?? '';
+
+        $selectedBarcodes = json_decode(
+            (string) $barcodesJson,
+            true
+        );
+
+        if (
+            !is_array($selectedBarcodes) ||
+            json_last_error() !== JSON_ERROR_NONE
+        ) {
+            throw new Exception('Format data barcode tidak valid.');
+        }
+
+        $selectedBarcodes = array_values(array_unique(array_filter(
+            array_map(
+                static fn($value) => trim((string) $value),
+                $selectedBarcodes
+            ),
+            static fn($value) => $value !== ''
+        )));
+
+        if (count($selectedBarcodes) === 0) {
+            throw new Exception('Pilih minimal satu barcode.');
+        }
+
+        /*
+         * 4. MULAI TRANSACTION
+         */
+        mysqli_begin_transaction($conn);
+        $transactionStarted = true;
+
+        $placeholders = implode(
+            ',',
+            array_fill(0, count($selectedBarcodes), '?')
+        );
+
+        /*
+         * 5. LOCK DAN AMBIL SELURUH ROW BARCODE
+         */
+        $selectSql = "
+            SELECT
+                id_trans,
+                barcode,
+                bucket,
+                model,
+                style,
+                ncvs,
+                last_gate,
+                print_status,
+                global_barcode
+            FROM tbl_transactions
+            WHERE barcode IN ($placeholders)
+            ORDER BY id_trans ASC
+            FOR UPDATE
+        ";
+
+        $stmt = mysqli_prepare($conn, $selectSql);
+
+        if (!$stmt) {
+            throw new Exception('Gagal menyiapkan query barcode.');
+        }
+
+        $types = str_repeat('s', count($selectedBarcodes));
+        $bindParams = [$types];
+
+        foreach ($selectedBarcodes as $key => $value) {
+            $bindParams[] = &$selectedBarcodes[$key];
+        }
+
+        call_user_func_array(
+            'mysqli_stmt_bind_param',
+            array_merge([$stmt], $bindParams)
+        );
+
+        if (!mysqli_stmt_execute($stmt)) {
+            throw new Exception(
+                'Gagal mengambil transaksi: ' . mysqli_stmt_error($stmt)
+            );
+        }
+
+        $result = mysqli_stmt_get_result($stmt);
+        $allData = [];
+
+        while ($row = mysqli_fetch_assoc($result)) {
+            $allData[] = $row;
+        }
+
+        mysqli_stmt_close($stmt);
+
+        if (count($allData) === 0) {
+            throw new Exception('Barcode tidak ditemukan.');
+        }
+
+        /*
+         * 6. VALIDASI BARCODE DAN KELOMPOK
+         */
+        $foundBarcodes = array_unique(array_column(
+            $allData,
+            'barcode'
+        ));
+
+        if (count($foundBarcodes) !== count($selectedBarcodes)) {
+            throw new Exception(
+                'Sebagian barcode tidak ditemukan. Silakan refresh data.'
+            );
+        }
+
+        $group = null;
+
+        foreach ($allData as $data) {
+
+            if (
+                $data['last_gate'] !== 'IN_SM_SUBCONT' ||
+                $data['print_status'] !== 'PRINTED' ||
+                trim((string) ($data['global_barcode'] ?? '')) !== ''
+            ) {
+                throw new Exception(
+                    'Terdapat transaksi yang sudah diproses atau statusnya berubah. Silakan refresh data.'
+                );
+            }
+
+            $currentGroup = [
+                'bucket' => (string) $data['bucket'],
+                'model'  => (string) $data['model'],
+                'style'  => (string) $data['style'],
+                'ncvs'   => trim((string) $data['ncvs'])
+            ];
+
+            if ($group === null) {
+                $group = $currentGroup;
+            } elseif ($group !== $currentGroup) {
+                throw new Exception(
+                    'Barcode yang dipilih harus berasal dari Bucket, Model, Style, dan NCVS yang sama.'
+                );
+            }
+
+            if (
+                $userNcvs !== '' &&
+                $currentGroup['ncvs'] !== $userNcvs
+            ) {
+                throw new Exception(
+                    'Anda tidak memiliki akses ke NCVS ini.'
+                );
+            }
+        }
+
+        if (!preg_match('/^\d{3}$/', $group['ncvs'])) {
+            throw new Exception(
+                'Format NCVS tidak valid. Dibutuhkan NCVS 3 digit.'
+            );
+        }
+
+        /*
+         * 7. GENERATE PREFIX GLOBAL BARCODE
+         */
+        $date = new DateTimeImmutable(
+            'now',
+            new DateTimeZone('Asia/Jakarta')
+        );
+
+        $dateCode = $date->format('Ymd');
+        $prefix = 'GB' . $dateCode . $group['ncvs'];
+
+        /*
+         * 8. DATABASE NAMED LOCK
+         * Mencegah duplicate increment untuk tanggal + NCVS sama.
+         */
+        $lockName = 'RTS_' . $dateCode . '_' . $group['ncvs'];
+
+        $stmtLock = mysqli_prepare(
+            $conn,
+            "SELECT GET_LOCK(?, 10) AS lock_status"
+        );
+
+        if (!$stmtLock) {
+            throw new Exception('Gagal menyiapkan database lock.');
+        }
+
+        mysqli_stmt_bind_param($stmtLock, 's', $lockName);
+        mysqli_stmt_execute($stmtLock);
+
+        $lockResult = mysqli_stmt_get_result($stmtLock);
+        $lockData = mysqli_fetch_assoc($lockResult);
+
+        mysqli_stmt_close($stmtLock);
+
+        if ((int) ($lockData['lock_status'] ?? 0) !== 1) {
+            throw new Exception(
+                'Sistem sedang memproses Global Barcode lain. Silakan coba kembali.'
+            );
+        }
+
+        $lockAcquired = true;
+
+        /*
+         * 9. AMBIL INCREMENT TERAKHIR
+         */
+        $stmtIncrement = mysqli_prepare(
+            $conn,
+            "SELECT
+                MAX(CAST(RIGHT(global_barcode, 3) AS UNSIGNED)) AS last_increment
+             FROM tbl_transactions
+             WHERE LEFT(global_barcode, 13) = ?
+               AND CHAR_LENGTH(global_barcode) = 16"
+        );
+
+        if (!$stmtIncrement) {
+            throw new Exception('Gagal mengambil increment terakhir.');
+        }
+
+        mysqli_stmt_bind_param($stmtIncrement, 's', $prefix);
+        mysqli_stmt_execute($stmtIncrement);
+
+        $incrementResult = mysqli_stmt_get_result($stmtIncrement);
+        $incrementData = mysqli_fetch_assoc($incrementResult);
+
+        mysqli_stmt_close($stmtIncrement);
+
+        $lastIncrement = (int) ($incrementData['last_increment'] ?? 0);
+        $nextIncrement = $lastIncrement + 1;
+
+        if ($nextIncrement > 999) {
+            throw new Exception(
+                'Batas maksimal 999 Global Barcode untuk NCVS ini hari ini sudah tercapai.'
+            );
+        }
+
+        $globalBarcode = $prefix . str_pad(
+            (string) $nextIncrement,
+            3,
+            '0',
+            STR_PAD_LEFT
+        );
+
+        /*
+         * 10. UPDATE SELURUH TRANSAKSI TERPILIH
+         */
+        $updateSql = "
+            UPDATE tbl_transactions
+            SET
+                global_barcode = ?,
+                print_status = 'READY'
+            WHERE barcode IN ($placeholders)
+              AND last_gate = 'IN_SM_SUBCONT'
+              AND print_status = 'PRINTED'
+              AND (
+                    global_barcode IS NULL
+                    OR global_barcode = ''
+              )
+        ";
+
+        $stmtUpdate = mysqli_prepare($conn, $updateSql);
+
+        if (!$stmtUpdate) {
+            throw new Exception('Gagal menyiapkan update transaksi.');
+        }
+
+        $updateTypes = 's' . str_repeat('s', count($selectedBarcodes));
+        $updateParams = [$updateTypes, &$globalBarcode];
+
+        foreach ($selectedBarcodes as $key => $value) {
+            $updateParams[] = &$selectedBarcodes[$key];
+        }
+
+        call_user_func_array(
+            'mysqli_stmt_bind_param',
+            array_merge([$stmtUpdate], $updateParams)
+        );
+
+        if (!mysqli_stmt_execute($stmtUpdate)) {
+            throw new Exception(
+                'Gagal update transaksi: ' . mysqli_stmt_error($stmtUpdate)
+            );
+        }
+
+        $affectedRows = mysqli_stmt_affected_rows($stmtUpdate);
+
+        mysqli_stmt_close($stmtUpdate);
+
+        if ($affectedRows !== count($allData)) {
+            throw new Exception(
+                'Jumlah transaksi yang berhasil di-update tidak sesuai.'
+            );
+        }
+
+        /*
+         * 11. COMMIT
+         */
+        mysqli_commit($conn);
+        $transactionStarted = false;
+
+        echo json_encode([
+            'status' => 'success',
+            'message' => 'Global Barcode berhasil dibuat.',
+            'data' => [
+                'global_barcode' => $globalBarcode,
+                'total_barcode' => count($selectedBarcodes),
+                'total_transaction' => count($allData),
+                'bucket' => $group['bucket'],
+                'model' => $group['model'],
+                'style' => $group['style'],
+                'ncvs' => $group['ncvs']
+            ]
+        ], JSON_UNESCAPED_UNICODE);
+
+        exit;
+    } catch (Throwable $e) {
+
+        if ($transactionStarted) {
+            mysqli_rollback($conn);
+        }
+
+        error_log(
+            'Ready to Ship Generate: ' . $e->getMessage()
+        );
+
+        http_response_code(400);
+
+        echo json_encode([
+            'status' => 'error',
+            'message' => $e->getMessage()
+        ], JSON_UNESCAPED_UNICODE);
+
+        exit;
+    } finally {
+
+        /*
+         * 12. RELEASE DATABASE LOCK
+         */
+        if ($lockAcquired && $lockName !== null) {
+
+            $stmtRelease = mysqli_prepare(
+                $conn,
+                "SELECT RELEASE_LOCK(?)"
+            );
+
+            if ($stmtRelease) {
+                mysqli_stmt_bind_param(
+                    $stmtRelease,
+                    's',
+                    $lockName
+                );
+
+                mysqli_stmt_execute($stmtRelease);
+                mysqli_stmt_close($stmtRelease);
+            }
+        }
+    }
+}
+
+// UPDATE STATUS CETAK - READY TO SHIP
+if (
+    isset($_POST['action']) &&
+    $_POST['action'] === 'update-ready-to-wh-status'
+) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $transactionStarted = false;
+
+    try {
+
+        // 1. VALIDASI SESSION
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+
+        if (empty($_SESSION['nik_user'])) {
+            throw new RuntimeException('Sesi login tidak ditemukan.');
+        }
+
+        $nik = trim((string) $_SESSION['nik_user']);
+
+        // 2. VALIDASI STATUS DAN GLOBAL BARCODE
+        $printStatus = strtoupper(trim(
+            (string) ($_POST['print_status'] ?? '')
+        ));
+
+        $globalBarcode = trim(
+            (string) ($_POST['global_barcode'] ?? '')
+        );
+
+        if (!in_array($printStatus, ['PRINTED', 'FAILED'], true)) {
+            throw new RuntimeException('Status cetak tidak valid.');
+        }
+
+        if ($globalBarcode === '') {
+            throw new RuntimeException('Global Barcode tidak ditemukan.');
+        }
+
+        // 3. VALIDASI USER DAN NCVS
+        $stmtUser = mysqli_prepare(
+            $conn,
+            "SELECT ncvs, username
+            FROM tbl_user
+            WHERE nik_user = ?
+            AND is_deleted = 0
+            LIMIT 1"
+        );
+
+        if (!$stmtUser) {
+            throw new RuntimeException('Gagal menyiapkan validasi user.');
+        }
+
+        mysqli_stmt_bind_param($stmtUser, 's', $nik);
+        mysqli_stmt_execute($stmtUser);
+
+        $userResult = mysqli_stmt_get_result($stmtUser);
+        $userData = mysqli_fetch_assoc($userResult);
+
+        mysqli_stmt_close($stmtUser);
+
+        if (!$userData) {
+            throw new RuntimeException('User tidak valid atau tidak aktif.');
+        }
+
+        $userNcvs = trim((string) ($userData['ncvs'] ?? ''));
+
+        $username = trim((string) ($userData['username'] ?? ''));
+
+        if ($username === '') {
+            throw new RuntimeException('Username user tidak ditemukan.');
+        }
+
+        // 4. MULAI DATABASE TRANSACTION
+        mysqli_begin_transaction($conn);
+        $transactionStarted = true;
+
+        // 5. AMBIL SELURUH TRANSAKSI GLOBAL BARCODE
+        // FOR UPDATE mencegah perubahan bersamaan.
+        $sql = "
+            SELECT
+                id_trans,
+                global_barcode,
+                barcode,
+                id_komponen_in,
+                nm_komponen_in,
+                id_group,
+                lot,
+                size,
+                qty_sm_subcont,
+                print_status,
+                last_gate,
+                ncvs
+            FROM tbl_transactions
+            WHERE global_barcode = ?
+              AND print_status = 'READY'
+              AND last_gate = 'IN_SM_SUBCONT'
+        ";
+
+        $params = [$globalBarcode];
+        $types = 's';
+
+        if ($userNcvs !== '') {
+            $sql .= " AND ncvs = ?";
+            $params[] = $userNcvs;
+            $types .= 's';
+        }
+
+        $sql .= " FOR UPDATE";
+
+        $stmtSelect = mysqli_prepare($conn, $sql);
+
+        if (!$stmtSelect) {
+            throw new RuntimeException('Gagal menyiapkan data transaksi.');
+        }
+
+        mysqli_stmt_bind_param(
+            $stmtSelect,
+            $types,
+            ...$params
+        );
+
+        if (!mysqli_stmt_execute($stmtSelect)) {
+            throw new RuntimeException(
+                'Gagal mengambil transaksi: ' .
+                    mysqli_stmt_error($stmtSelect)
+            );
+        }
+
+        $result = mysqli_stmt_get_result($stmtSelect);
+
+        $transactions = [];
+
+        while ($row = mysqli_fetch_assoc($result)) {
+            $transactions[] = $row;
+        }
+
+        mysqli_stmt_close($stmtSelect);
+
+        if (empty($transactions)) {
+            throw new RuntimeException(
+                'Transaksi tidak ditemukan, sudah diproses, atau tidak dapat diakses.'
+            );
+        }
+
+        // 6. SIAPKAN SNAPSHOT AUDIT
+        $oldData = [
+            'global_barcode' => $globalBarcode,
+            'print_status' => 'READY',
+            'last_gate' => 'IN_SM_SUBCONT',
+            'total_transaction' => count($transactions),
+            'detail' => $transactions
+        ];
+
+        // 7. UPDATE STATUS TRANSAKSI
+        $newGate = $printStatus === 'PRINTED'
+            ? 'READY_TO_WH'
+            : 'IN_SM_SUBCONT';
+
+        $stmtUpdate = mysqli_prepare(
+            $conn,
+            "UPDATE tbl_transactions
+             SET
+                print_status = ?,
+                last_gate = ?,
+                updated_at = NOW()
+             WHERE global_barcode = ?
+               AND print_status = 'READY'
+               AND last_gate = 'IN_SM_SUBCONT'"
+        );
+
+        if (!$stmtUpdate) {
+            throw new RuntimeException('Gagal menyiapkan update transaksi.');
+        }
+
+        mysqli_stmt_bind_param(
+            $stmtUpdate,
+            'sss',
+            $printStatus,
+            $newGate,
+            $globalBarcode
+        );
+
+        if (!mysqli_stmt_execute($stmtUpdate)) {
+            throw new RuntimeException(
+                'Gagal update transaksi: ' .
+                    mysqli_stmt_error($stmtUpdate)
+            );
+        }
+
+        $updatedRows = mysqli_stmt_affected_rows($stmtUpdate);
+
+        mysqli_stmt_close($stmtUpdate);
+
+        if ($updatedRows !== count($transactions)) {
+            throw new RuntimeException(
+                'Jumlah transaksi yang berhasil di-update tidak sesuai.'
+            );
+        }
+
+        // 8. INSERT EVENT DAN TLOG
+        // Hanya dilakukan ketika hasil cetak BERHASIL.
+        if ($printStatus === 'PRINTED') {
+
+            $eventStmt = mysqli_prepare(
+                $conn,
+                "INSERT INTO tbl_transaksi_event (
+                    id_trans,
+                    global_barcode,
+                    barcode,
+                    id_komponen,
+                    nm_komponen,
+                    id_group,
+                    lot,
+                    size,
+                    gate,
+                    flow_type,
+                    qty,
+                    transac_by,
+                    created_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?,
+                    'READY_TO_WH',
+                    'OUT',
+                    ?, ?, NOW()
+                )"
+            );
+
+            if (!$eventStmt) {
+                throw new RuntimeException(
+                    'Gagal menyiapkan insert event.'
+                );
+            }
+
+            foreach ($transactions as $row) {
+
+                $idTrans = (string) $row['id_trans'];
+                $eventGlobalBarcode = $globalBarcode;
+                $barcode = (string) $row['barcode'];
+                $idKomponen = $row['id_komponen_in'];
+                $nmKomponen = $row['nm_komponen_in'];
+                $idGroup = $row['id_group'];
+                $lot = (string) $row['lot'];
+                $size = (string) $row['size'];
+                $qty = $row['qty_sm_subcont'];
+                $transacBy = $username;
+
+                mysqli_stmt_bind_param(
+                    $eventStmt,
+                    'ssssssssss',
+                    $idTrans,
+                    $eventGlobalBarcode,
+                    $barcode,
+                    $idKomponen,
+                    $nmKomponen,
+                    $idGroup,
+                    $lot,
+                    $size,
+                    $qty,
+                    $transacBy
+                );
+
+                if (!mysqli_stmt_execute($eventStmt)) {
+                    throw new RuntimeException(
+                        'Gagal menyimpan event: ' .
+                            mysqli_stmt_error($eventStmt)
+                    );
+                }
+            }
+
+            mysqli_stmt_close($eventStmt);
+
+            // Snapshot data setelah update.
+            $newTransactions = [];
+
+            foreach ($transactions as $row) {
+                $row['print_status'] = 'PRINTED';
+                $row['last_gate'] = 'READY_TO_WH';
+                $newTransactions[] = $row;
+            }
+
+            $newData = [
+                'global_barcode' => $globalBarcode,
+                'print_status' => 'PRINTED',
+                'last_gate' => 'READY_TO_WH',
+                'total_transaction' => count($newTransactions),
+                'detail' => $newTransactions
+            ];
+
+            $oldJson = json_encode(
+                $oldData,
+                JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR
+            );
+
+            $newJson = json_encode(
+                $newData,
+                JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR
+            );
+
+            if ($oldJson === false || $newJson === false) {
+                throw new RuntimeException(
+                    'Gagal membuat data audit log.'
+                );
+            }
+
+            $actionType = 'READY_TO_WH';
+
+            $stmtLog = mysqli_prepare(
+                $conn,
+                "INSERT INTO tlog_transaksi (
+                    updated_by,
+                    action_type,
+                    old_data,
+                    new_data,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, NOW(), NOW())"
+            );
+
+            if (!$stmtLog) {
+                throw new RuntimeException(
+                    'Gagal menyiapkan audit log.'
+                );
+            }
+
+            mysqli_stmt_bind_param(
+                $stmtLog,
+                'ssss',
+                $nik,
+                $actionType,
+                $oldJson,
+                $newJson
+            );
+
+            if (!mysqli_stmt_execute($stmtLog)) {
+                throw new RuntimeException(
+                    'Gagal menyimpan audit log: ' .
+                        mysqli_stmt_error($stmtLog)
+                );
+            }
+
+            mysqli_stmt_close($stmtLog);
+        }
+
+        // 9. COMMIT
+        mysqli_commit($conn);
+        $transactionStarted = false;
+
+        echo json_encode([
+            'status' => 'success',
+            'print_status' => $printStatus,
+            'global_barcode' => $globalBarcode,
+            'updated_rows' => $updatedRows,
+            'event_inserted' => $printStatus === 'PRINTED'
+                ? $updatedRows
+                : 0,
+            'message' => $printStatus === 'PRINTED'
+                ? 'Data ready to warehouse berhasil dikonfirmasi. Lanjutkan serah terima dengan pihak warehouse.'
+                : 'Data ready to warehouse gagal dikonfirmasi. Dan status cetak global barcode diubah ke FAILED.'
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+
+        if ($transactionStarted) {
+            mysqli_rollback($conn);
+        }
+
+        error_log(
+            'update-ready-to-wh-status error: ' . $e->getMessage()
+        );
+
+        http_response_code(400);
+
+        echo json_encode([
+            'status' => 'error',
+            'message' => $e instanceof RuntimeException
+                ? $e->getMessage()
+                : 'Gagal memperbarui status Ready to Ship.'
+        ], JSON_UNESCAPED_UNICODE);
+    }
+
+    exit;
+}
+
+// GET READY TO SHIP LABELS
+if (
+    isset($_POST['action']) &&
+    $_POST['action'] === 'get-ready-to-ship-labels'
+) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    try {
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+
+        // 1. Validasi session user
+        $nik = trim((string)($_SESSION['nik_user'] ?? ''));
+
+        if ($nik === '') {
+            throw new RuntimeException('Sesi user tidak ditemukan.');
+        }
+
+        // 2. Ambil NCVS user aktif
+        $userStmt = mysqli_prepare(
+            $conn,
+            "SELECT ncvs
+             FROM tbl_user
+             WHERE nik_user = ?
+               AND is_deleted = 0
+             LIMIT 1"
+        );
+
+        if (!$userStmt) {
+            throw new RuntimeException('Gagal memvalidasi user.');
+        }
+
+        mysqli_stmt_bind_param($userStmt, 's', $nik);
+        mysqli_stmt_execute($userStmt);
+
+        $userResult = mysqli_stmt_get_result($userStmt);
+        $user = mysqli_fetch_assoc($userResult);
+
+        mysqli_stmt_close($userStmt);
+
+        if (!$user) {
+            throw new RuntimeException('User aktif tidak ditemukan.');
+        }
+
+        $userNcvs = trim((string)($user['ncvs'] ?? ''));
+
+        // 3. Validasi Global Barcode
+        $globalBarcode = trim(
+            (string)($_POST['global_barcode'] ?? '')
+        );
+
+        if ($globalBarcode === '') {
+            throw new RuntimeException('Global Barcode tidak ditemukan.');
+        }
+
+        // Filter akses NCVS
+        $ncvsFilter = '';
+        $params = [$globalBarcode];
+        $types = 's';
+
+        if ($userNcvs !== '') {
+            $ncvsFilter = ' AND ncvs = ? ';
+            $params[] = $userNcvs;
+            $types .= 's';
+        }
+
+        // Filter transaksi yang masih menunggu konfirmasi cetak
+        $transactionFilter = "
+            global_barcode = ?
+            AND print_status = 'READY'
+            AND last_gate = 'IN_SM_SUBCONT'
+            $ncvsFilter
+        ";
+
+        /*
+         * 4. Ambil informasi utama label
+         *
+         * Total Qty menggunakan SUM(qty_sm_subcont).
+         */
+        $labelSql = "
+            SELECT
+                global_barcode,
+                MIN(bucket) AS bucket,
+                MIN(ncvs) AS ncvs,
+                MIN(model) AS model,
+                MIN(style) AS style,
+                SUM(COALESCE(qty_sm_subcont, 0)) AS total_qty,
+                COUNT(*) AS total_transaction
+            FROM tbl_transactions
+            WHERE $transactionFilter
+            GROUP BY global_barcode
+            LIMIT 1
+        ";
+
+        $labelStmt = mysqli_prepare($conn, $labelSql);
+
+        if (!$labelStmt) {
+            throw new RuntimeException('Gagal menyiapkan data label.');
+        }
+
+        mysqli_stmt_bind_param(
+            $labelStmt,
+            $types,
+            ...$params
+        );
+
+        mysqli_stmt_execute($labelStmt);
+
+        $labelResult = mysqli_stmt_get_result($labelStmt);
+        $label = mysqli_fetch_assoc($labelResult);
+
+        mysqli_stmt_close($labelStmt);
+
+        if (!$label) {
+            throw new RuntimeException(
+                'Global Barcode tidak ditemukan, sudah diproses, atau Anda tidak memiliki akses.'
+            );
+        }
+
+        /*
+         * 5. Ambil daftar lot
+         */
+        $lotSql = "
+            SELECT DISTINCT lot
+            FROM tbl_transactions
+            WHERE $transactionFilter
+              AND lot IS NOT NULL
+              AND TRIM(lot) <> ''
+            ORDER BY CAST(lot AS UNSIGNED)
+        ";
+
+        $lotStmt = mysqli_prepare($conn, $lotSql);
+
+        if (!$lotStmt) {
+            throw new RuntimeException('Gagal mengambil data lot.');
+        }
+
+        mysqli_stmt_bind_param(
+            $lotStmt,
+            $types,
+            ...$params
+        );
+
+        mysqli_stmt_execute($lotStmt);
+
+        $lotResult = mysqli_stmt_get_result($lotStmt);
+        $lots = [];
+
+        while ($row = mysqli_fetch_assoc($lotResult)) {
+            $lots[] = $row['lot'];
+        }
+
+        mysqli_stmt_close($lotStmt);
+
+        /*
+         * 6. Ambil daftar vendor
+         */
+        $vendorSql = "
+            SELECT DISTINCT nm_vendor
+            FROM tbl_transactions
+            WHERE $transactionFilter
+              AND nm_vendor IS NOT NULL
+              AND TRIM(nm_vendor) <> ''
+            ORDER BY nm_vendor
+        ";
+
+        $vendorStmt = mysqli_prepare($conn, $vendorSql);
+
+        if (!$vendorStmt) {
+            throw new RuntimeException('Gagal mengambil data vendor.');
+        }
+
+        mysqli_stmt_bind_param(
+            $vendorStmt,
+            $types,
+            ...$params
+        );
+
+        mysqli_stmt_execute($vendorStmt);
+
+        $vendorResult = mysqli_stmt_get_result($vendorStmt);
+        $vendors = [];
+
+        while ($row = mysqli_fetch_assoc($vendorResult)) {
+            $vendors[] = $row['nm_vendor'];
+        }
+
+        mysqli_stmt_close($vendorStmt);
+
+        /*
+         * 7. Ambil main components
+         */
+        $mainComponentSql = "
+            SELECT DISTINCT nm_komponen_in
+            FROM tbl_transactions
+            WHERE $transactionFilter
+              AND nm_komponen_in IS NOT NULL
+              AND TRIM(nm_komponen_in) <> ''
+            ORDER BY nm_komponen_in
+        ";
+
+        $mainComponentStmt = mysqli_prepare(
+            $conn,
+            $mainComponentSql
+        );
+
+        if (!$mainComponentStmt) {
+            throw new RuntimeException(
+                'Gagal mengambil data main component.'
+            );
+        }
+
+        mysqli_stmt_bind_param(
+            $mainComponentStmt,
+            $types,
+            ...$params
+        );
+
+        mysqli_stmt_execute($mainComponentStmt);
+
+        $mainComponentResult = mysqli_stmt_get_result(
+            $mainComponentStmt
+        );
+
+        $mainComponents = [];
+
+        while ($row = mysqli_fetch_assoc($mainComponentResult)) {
+            $mainComponents[] = $row['nm_komponen_in'];
+        }
+
+        mysqli_stmt_close($mainComponentStmt);
+
+        /*
+         * 8. Ambil group components
+         */
+        $groupComponentSql = "
+            SELECT DISTINCT
+                c.nama_komponen
+            FROM tbl_transactions t
+            INNER JOIN tbl_komponen_proses cp
+                ON cp.id_group = t.id_group
+               AND cp.is_main = 0
+            INNER JOIN tbl_komponen c
+                ON c.id_komponen = cp.id_input
+               AND c.is_deleted = 0
+            WHERE t.global_barcode = ?
+              AND t.print_status = 'READY'
+              AND t.last_gate = 'IN_SM_SUBCONT'
+        ";
+
+        $groupComponentParams = [$globalBarcode];
+        $groupComponentTypes = 's';
+
+        if ($userNcvs !== '') {
+            $groupComponentSql .= ' AND t.ncvs = ? ';
+            $groupComponentParams[] = $userNcvs;
+            $groupComponentTypes .= 's';
+        }
+
+        $groupComponentSql .= ' ORDER BY c.nama_komponen ';
+
+        $groupComponentStmt = mysqli_prepare(
+            $conn,
+            $groupComponentSql
+        );
+
+        if (!$groupComponentStmt) {
+            throw new RuntimeException(
+                'Gagal mengambil data group component.'
+            );
+        }
+
+        mysqli_stmt_bind_param(
+            $groupComponentStmt,
+            $groupComponentTypes,
+            ...$groupComponentParams
+        );
+
+        mysqli_stmt_execute($groupComponentStmt);
+
+        $groupComponentResult = mysqli_stmt_get_result(
+            $groupComponentStmt
+        );
+
+        $groupComponents = [];
+
+        while ($row = mysqli_fetch_assoc($groupComponentResult)) {
+            $groupComponents[] = $row['nama_komponen'];
+        }
+
+        mysqli_stmt_close($groupComponentStmt);
+
+        /*
+         * 9. Susun satu objek label
+         */
+        $label['global_barcode'] = $globalBarcode;
+        $label['total_qty'] = (int)$label['total_qty'];
+        $label['total_transaction'] = (int)$label['total_transaction'];
+
+        $label['lot_range'] = formatLotRange($lots);
+        $label['nm_vendor'] = implode(', ', $vendors);
+        $label['main_components'] = $mainComponents;
+        $label['group_components'] = $groupComponents;
+
+        echo json_encode([
+            'status' => 'success',
+            'message' => 'Data label Ready to Ship berhasil diambil.',
+            'label' => $label
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        error_log(
+            'get-ready-to-ship-labels error: ' . $e->getMessage()
+        );
+
+        echo json_encode([
+            'status' => 'error',
+            'message' => $e instanceof RuntimeException
+                ? $e->getMessage()
+                : 'Gagal mengambil data label Ready to Ship.'
         ], JSON_UNESCAPED_UNICODE);
     }
 
