@@ -30,7 +30,7 @@ SELECT DISTINCT
 
 FROM tbl_transaksi_event te
 
-INNER JOIN tbl_transaksi t
+INNER JOIN tbl_transactions t
 ON t.id_trans = te.id_trans
 
 WHERE

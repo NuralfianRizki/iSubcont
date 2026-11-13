@@ -48,7 +48,7 @@ $sql = "
     FROM tbl_master_data m
     INNER JOIN (
         SELECT DISTINCT job_order
-        FROM tbl_transaksi
+        FROM tbl_transactions
     ) t
         ON m.job_order = t.job_order
     WHERE 1=1

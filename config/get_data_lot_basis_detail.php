@@ -22,18 +22,18 @@ if (!in_array($flow, ['sm', 'wh'], true)) {
 if ($flow === 'wh') {
 
     $gateMap = [
-        'WH_SUBCONT_FROM_SM_SUBCONT' => 'wh_incoming',
-        'WH_SUBCONT_TO_VENDOR'       => 'wh_vendor',
-        'WH_SUBCONT_FROM_VENDOR'     => 'wh_return',
-        'SM_SUBCONT_FROM_WH_SUBCONT'   => 'wh_to_sm'
+        'IN_WH_SUBCONT' => 'wh_incoming',
+        'OUT_WH_SUBCONT'       => 'wh_vendor',
+        'IN_WH_FROM_VENDOR'     => 'wh_return',
+        'OUT_WH_TO_SM'   => 'wh_to_sm'
     ];
 } else {
 
     $gateMap = [
-        'SM_SUBCONT_FROM_CUT'         => 'in_sm',
-        'WH_SUBCONT_FROM_SM_SUBCONT'    => 'send_wh',
-        'SM_SUBCONT_FROM_WH_SUBCONT'  => 'return_sm',
-        'SM_SUBCONT_TO_NCVS'          => 'out_prod'
+        'IN_SM_SUBCONT'         => 'in_sm',
+        'OUT_SM_SUBCONT'    => 'send_wh',
+        'IN_SM_FROM_WH'  => 'return_sm',
+        'OUT_SM_TO_PROD'          => 'out_prod'
     ];
 }
 
@@ -67,7 +67,7 @@ $stmt = $conn->prepare("
     SELECT DISTINCT
         COALESCE(t.id_komponen_out, t.id_komponen_in) AS id_komponen,
         COALESCE(t.nm_komponen_out, t.nm_komponen_in) AS nama_komponen
-    FROM tbl_transaksi t
+    FROM tbl_transactions t
     WHERE t.job_order = ?
       AND t.is_main_komponen = 1
     ORDER BY
@@ -101,7 +101,7 @@ $stmt = $conn->prepare("
         COALESCE(t.nm_komponen_out, t.nm_komponen_in) AS nama_komponen,
         t.lot,
         t.size
-    FROM tbl_transaksi t
+    FROM tbl_transactions t
     WHERE t.job_order = ?
       AND t.is_main_komponen = 1
     ORDER BY
@@ -198,7 +198,7 @@ $stmt = $conn->prepare("
 
     FROM tbl_transaksi_event te
 
-    INNER JOIN tbl_transaksi t
+    INNER JOIN tbl_transactions t
         ON t.id_trans = te.id_trans
 
     WHERE t.job_order = ?

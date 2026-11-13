@@ -1,5 +1,6 @@
 
 <?php
+
 require 'function.php';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -16,6 +17,11 @@ function respondQtyFulfillment(array $data, int $httpCode = 200): void
 }
 
 try {
+
+    // =====================================================
+    // 1. VALIDASI SESSION
+    // =====================================================
+
     if (empty($_SESSION['nik_user'])) {
         respondQtyFulfillment([
             'status' => 'error',
@@ -24,10 +30,15 @@ try {
     }
 
     if (!isset($conn) || !($conn instanceof mysqli)) {
-        throw new RuntimeException('Koneksi database tidak tersedia.');
+        throw new RuntimeException(
+            'Koneksi database tidak tersedia.'
+        );
     }
 
-    // Validasi user dan ambil NCVS dari NIK login.
+    // =====================================================
+    // 2. VALIDASI USER DAN NCVS
+    // =====================================================
+
     $nik = trim((string) $_SESSION['nik_user']);
 
     $userStmt = mysqli_prepare(
@@ -61,82 +72,127 @@ try {
     }
 
     $userNcvs = trim((string) ($user['ncvs'] ?? ''));
+
     $action = trim((string) ($_POST['action'] ?? ''));
 
+    // =====================================================
+    // 3. ACTION DETAIL
+    // =====================================================
+
     if ($action === 'detail') {
+
         $bucket = trim((string) ($_POST['bucket'] ?? ''));
         $model  = trim((string) ($_POST['model'] ?? ''));
         $style  = trim((string) ($_POST['style'] ?? ''));
         $ncvs   = trim((string) ($_POST['ncvs'] ?? ''));
 
+        $mainComponent = trim(
+            (string) ($_POST['main_component'] ?? '')
+        );
+
+        // ---------------------------------------------
+        // VALIDASI PARAMETER KELOMPOK
+        // ---------------------------------------------
+
         if (
-            $bucket === '' || $model === '' ||
-            $style === '' || $ncvs === ''
+            $bucket === '' ||
+            $model === '' ||
+            $style === '' ||
+            $ncvs === '' ||
+            $mainComponent === ''
         ) {
             respondQtyFulfillment([
                 'status' => 'error',
-                'message' => 'Parameter kelompok detail tidak lengkap.'
+                'message' => 'Parameter kelompok atau Main Component tidak lengkap.'
             ], 400);
         }
 
+        // ---------------------------------------------
+        // VALIDASI AKSES NCVS
+        // ---------------------------------------------
 
+        if ($userNcvs !== '' && $ncvs !== $userNcvs) {
+            respondQtyFulfillment([
+                'status' => 'error',
+                'message' => 'Anda tidak memiliki akses ke NCVS ini.'
+            ], 403);
+        }
+
+        // ---------------------------------------------
+        // QUERY DETAIL
+        // ---------------------------------------------
 
         $detailSql = "
-    SELECT
-        MAX(id_trans) AS id_trans,
-        job_order,
-        bucket,
-        po_code,
-        po_item,
-        model,
-        style,
-        ncvs,
-        lot,
-        size,
-        id_komponen_in,
-        nm_komponen_in,
-        id_komponen_out,
-        nm_komponen_out,
-        id_group,
-        id_vendor,
-        nm_vendor,
-        MAX(qty_plan) AS qty_plan,
-        SUM(COALESCE(qty_pre_setting, 0)) AS qty_pre_setting,
-        GREATEST(
-            MAX(qty_plan) - SUM(COALESCE(qty_pre_setting, 0)),
-            0
-        ) AS qty_remaining
-    FROM tbl_transactions
-    WHERE mode = 'CUSTOM'
-      AND last_gate = 'PRE_SETTING'
-      AND bucket = ?
-      AND model = ?
-      AND style = ?
-      AND ncvs = ?
-      AND barcode_status = 'ACTIVE'
-    GROUP BY
-        job_order,
-        bucket,
-        po_code,
-        po_item,
-        model,
-        style,
-        ncvs,
-        lot,
-        size,
-        id_komponen_in,
-        nm_komponen_in,
-        id_komponen_out,
-        nm_komponen_out,
-        id_group,
-        id_vendor,
-        nm_vendor
-    HAVING GREATEST(
-        MAX(qty_plan) - SUM(COALESCE(qty_pre_setting, 0)),
-        0
-    ) > 0
-    ORDER BY lot, size
-";
+            SELECT
+                MAX(id_trans) AS id_trans,
+                job_order,
+                bucket,
+                po_code,
+                po_item,
+                model,
+                style,
+                ncvs,
+                lot,
+                size,
+                id_komponen_in,
+                nm_komponen_in AS komponen,
+                id_komponen_out,
+                nm_komponen_out,
+                id_group,
+                id_vendor,
+                nm_vendor,
+
+                MAX(qty_plan) AS qty_plan,
+
+                SUM(
+                    COALESCE(qty_pre_setting, 0)
+                ) AS qty_pre_setting,
+
+                GREATEST(
+                    MAX(qty_plan) -
+                    SUM(COALESCE(qty_pre_setting, 0)),
+                    0
+                ) AS qty_remaining
+
+            FROM tbl_transactions
+
+            WHERE mode = 'CUSTOM'
+              AND last_gate = 'PRE_SETTING'
+              AND bucket = ?
+              AND model = ?
+              AND style = ?
+              AND ncvs = ?
+              AND nm_komponen_in = ?
+              AND barcode_status = 'ACTIVE'
+
+            GROUP BY
+                job_order,
+                bucket,
+                po_code,
+                po_item,
+                model,
+                style,
+                ncvs,
+                lot,
+                size,
+                id_komponen_in,
+                nm_komponen_in,
+                id_komponen_out,
+                nm_komponen_out,
+                id_group,
+                id_vendor,
+                nm_vendor
+
+            HAVING GREATEST(
+                MAX(qty_plan) -
+                SUM(COALESCE(qty_pre_setting, 0)),
+                0
+            ) > 0
+
+            ORDER BY
+                CAST(lot AS UNSIGNED) ASC,
+                size ASC
+        ";
 
         $detailStmt = mysqli_prepare($conn, $detailSql);
 
@@ -148,13 +204,13 @@ try {
 
         mysqli_stmt_bind_param(
             $detailStmt,
-            'ssss',
+            'sssss',
             $bucket,
             $model,
             $style,
-            $ncvs
+            $ncvs,
+            $mainComponent
         );
-
 
         if (!mysqli_stmt_execute($detailStmt)) {
             throw new RuntimeException(
@@ -164,12 +220,17 @@ try {
         }
 
         $detailResult = mysqli_stmt_get_result($detailStmt);
+
         $rows = [];
 
         while ($row = mysqli_fetch_assoc($detailResult)) {
+
             $row['id_trans'] = (string) $row['id_trans'];
+
             $row['qty_remaining'] = (float) $row['qty_remaining'];
+
             $row['status_label'] = 'Belum terpenuhi';
+
             $rows[] = $row;
         }
 
@@ -181,6 +242,10 @@ try {
         ]);
     }
 
+    // =====================================================
+    // 4. VALIDASI ACTION LIST
+    // =====================================================
+
     if ($action !== 'list') {
         respondQtyFulfillment([
             'status' => 'error',
@@ -188,94 +253,114 @@ try {
         ], 400);
     }
 
+    // =====================================================
+    // 5. PARAMETER DATATABLES
+    // =====================================================
+
     $keyword = trim((string) ($_POST['search'] ?? ''));
-    $start = max(0, (int) ($_POST['start'] ?? 0));
+
+    $start = max(
+        0,
+        (int) ($_POST['start'] ?? 0)
+    );
+
     $length = (int) ($_POST['length'] ?? 20);
 
     if (!in_array($length, [10, 20, 50, 100], true)) {
         $length = 20;
     }
 
+    // =====================================================
+    // 6. BASE QUERY - SOURCE DEBT
+    // =====================================================
 
     $baseSql = "
-    SELECT
-        bucket,
-        model,
-        style,
-        ncvs,
-        SUM(qty_debt) AS total_remaining
-    FROM (
         SELECT
-            job_order,
-            po_code,
-            po_item,
             bucket,
             model,
             style,
             ncvs,
-            lot,
-            size,
-            id_komponen_in,
-            nm_komponen_in,
-            id_komponen_out,
-            nm_komponen_out,
-            id_group,
-            id_vendor,
-            nm_vendor,
+            nm_komponen_in AS main_component,
+            SUM(qty_debt) AS total_remaining
 
-            GREATEST(
-                MAX(
-                    COALESCE(
-                        CAST(NULLIF(qty_plan, '') AS DECIMAL(10,2)),
-                        0
+        FROM (
+
+            SELECT
+                job_order,
+                po_code,
+                po_item,
+                bucket,
+                model,
+                style,
+                ncvs,
+                lot,
+                size,
+                id_komponen_in,
+                nm_komponen_in,
+                id_komponen_out,
+                nm_komponen_out,
+                id_group,
+                id_vendor,
+                nm_vendor,
+
+                GREATEST(
+                    MAX(
+                        COALESCE(
+                            CAST(NULLIF(qty_plan, '') AS DECIMAL(10,2)),
+                            0
+                        )
                     )
-                )
-                -
-                SUM(
-                    COALESCE(
-                        CAST(NULLIF(qty_pre_setting, '') AS DECIMAL(10,2)),
-                        0
-                    )
-                ),
-                0
-            ) AS qty_debt
+                    -
+                    SUM(
+                        COALESCE(
+                            CAST(NULLIF(qty_pre_setting, '') AS DECIMAL(10,2)),
+                            0
+                        )
+                    ),
+                    0
+                ) AS qty_debt
 
-        FROM tbl_transactions
+            FROM tbl_transactions
 
-        WHERE mode = 'CUSTOM'
-          AND last_gate = 'PRE_SETTING'
-          AND barcode_status = 'ACTIVE'
-          AND (? = '' OR ncvs = ?)
+            WHERE mode = 'CUSTOM'
+              AND last_gate = 'PRE_SETTING'
+              AND barcode_status = 'ACTIVE'
+              AND (? = '' OR ncvs = ?)
+
+            GROUP BY
+                job_order,
+                po_code,
+                po_item,
+                bucket,
+                model,
+                style,
+                ncvs,
+                lot,
+                size,
+                id_komponen_in,
+                nm_komponen_in,
+                id_komponen_out,
+                nm_komponen_out,
+                id_group,
+                id_vendor,
+                nm_vendor
+
+            HAVING qty_debt > 0
+
+        ) AS source_debts
 
         GROUP BY
-            job_order,
-            po_code,
-            po_item,
             bucket,
             model,
             style,
             ncvs,
-            lot,
-            size,
-            id_komponen_in,
-            nm_komponen_in,
-            id_komponen_out,
-            nm_komponen_out,
-            id_group,
-            id_vendor,
-            nm_vendor
+            nm_komponen_in
+    ";
 
-        HAVING qty_debt > 0
-    ) AS source_debts
+    // =====================================================
+    // 7. TOTAL RECORDS
+    // =====================================================
 
-    GROUP BY
-        bucket,
-        model,
-        style,
-        ncvs
-";
-
-    // 1. Total kelompok sebelum pencarian.
     $countSql = "
         SELECT COUNT(*) AS total
         FROM ($baseSql) AS custom_groups
@@ -304,21 +389,33 @@ try {
     }
 
     $countResult = mysqli_stmt_get_result($countStmt);
-    $recordsTotal = (int) mysqli_fetch_assoc($countResult)['total'];
+
+    $recordsTotal = (int) mysqli_fetch_assoc(
+        $countResult
+    )['total'];
 
     mysqli_stmt_close($countStmt);
 
-    // 2. Pencarian hanya pada kolom listing utama.
+    // =====================================================
+    // 8. SEARCH FILTER
+    // =====================================================
+
     $searchSql = '';
-    $searchParams = [$userNcvs, $userNcvs];
+
+    $searchParams = [
+        $userNcvs,
+        $userNcvs
+    ];
 
     if ($keyword !== '') {
+
         $searchSql = "
             WHERE (
                 bucket LIKE ?
                 OR model LIKE ?
                 OR style LIKE ?
                 OR ncvs LIKE ?
+                OR main_component LIKE ?
             )
         ";
 
@@ -329,9 +426,14 @@ try {
             $like,
             $like,
             $like,
+            $like,
             $like
         );
     }
+
+    // =====================================================
+    // 9. FILTERED RECORDS
+    // =====================================================
 
     $filteredSql = "
         SELECT COUNT(*) AS total
@@ -361,21 +463,37 @@ try {
     }
 
     $filteredResult = mysqli_stmt_get_result($filteredStmt);
-    $recordsFiltered = (int) mysqli_fetch_assoc($filteredResult)['total'];
+
+    $recordsFiltered = (int) mysqli_fetch_assoc(
+        $filteredResult
+    )['total'];
 
     mysqli_stmt_close($filteredStmt);
 
-    // 3. Ambil data sesuai halaman DataTables.
+    // =====================================================
+    // 10. DATA LISTING
+    // =====================================================
+
     $dataSql = "
         SELECT
             bucket,
             model,
             style,
             ncvs,
+            main_component,
             total_remaining
+
         FROM ($baseSql) AS custom_groups
+
         $searchSql
-        ORDER BY bucket, model, style, ncvs
+
+        ORDER BY
+            bucket ASC,
+            model ASC,
+            style ASC,
+            ncvs ASC,
+            main_component ASC
+
         LIMIT ? OFFSET ?
     ";
 
@@ -388,6 +506,7 @@ try {
     }
 
     $dataParams = $searchParams;
+
     $dataParams[] = $length;
     $dataParams[] = $start;
 
@@ -405,14 +524,21 @@ try {
     }
 
     $dataResult = mysqli_stmt_get_result($dataStmt);
+
     $rows = [];
 
     while ($row = mysqli_fetch_assoc($dataResult)) {
+
         $row['total_remaining'] = (float) $row['total_remaining'];
+
         $rows[] = $row;
     }
 
     mysqli_stmt_close($dataStmt);
+
+    // =====================================================
+    // 11. RESPONSE LIST
+    // =====================================================
 
     respondQtyFulfillment([
         'status' => 'success',
@@ -421,6 +547,7 @@ try {
         'data' => $rows
     ]);
 } catch (Throwable $e) {
+
     error_log(
         'Quantity Fulfillment API: ' .
             $e->getMessage()

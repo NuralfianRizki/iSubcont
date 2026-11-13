@@ -51,7 +51,7 @@ function getSummary($conn, $dateFrom, $dateTo, $gateIn, $gateOut)
 
     FROM tbl_transaksi_event te
 
-    INNER JOIN tbl_transaksi t
+    INNER JOIN tbl_transactions t
 
         ON t.id_trans=te.id_trans
 
@@ -119,7 +119,7 @@ function getChart($conn, $dateFrom, $dateTo, $gateIn, $gateOut)
 
     FROM tbl_transaksi_event te
 
-INNER JOIN tbl_transaksi t
+INNER JOIN tbl_transactions t
 ON t.id_trans=te.id_trans
 
 WHERE
@@ -210,9 +210,9 @@ $response = [
 
             $dateTo,
 
-            "WH_SUBCONT_FROM_SM_SUBCONT",
+            "IN_WH_SUBCONT",
 
-            "WH_SUBCONT_TO_VENDOR"
+            "OUT_WH_SUBCONT"
 
         ),
 
@@ -224,9 +224,9 @@ $response = [
 
             $dateTo,
 
-            "WH_SUBCONT_FROM_SM_SUBCONT",
+            "IN_WH_SUBCONT",
 
-            "WH_SUBCONT_TO_VENDOR"
+            "OUT_WH_SUBCONT"
 
         )
 
@@ -242,9 +242,9 @@ $response = [
 
             $dateTo,
 
-            "WH_SUBCONT_FROM_VENDOR",
+            "IN_WH_FROM_VENDOR",
 
-            "SM_SUBCONT_FROM_WH_SUBCONT"
+            "OUT_WH_TO_SM"
 
         ),
 
@@ -256,9 +256,9 @@ $response = [
 
             $dateTo,
 
-            "WH_SUBCONT_FROM_VENDOR",
+            "IN_WH_FROM_VENDOR",
 
-            "SM_SUBCONT_FROM_WH_SUBCONT"
+            "OUT_WH_TO_SM"
 
         )
 

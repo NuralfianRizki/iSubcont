@@ -247,13 +247,13 @@ $username = $_SESSION['username'];
         AND is_main_komponen = 1
         AND last_gate = 'IN_SM_SUBCONT'
       ORDER BY
-          bucket ASC,
-          model ASC,
-          style ASC,
-          lot ASC,
-          CAST(REPLACE(size, 'T', '') AS UNSIGNED) ASC,
-          size ASC,
-          id_trans ASC
+        bucket ASC,
+        model ASC,
+        style ASC,
+        CAST(REPLACE(size, 'T', '') AS UNSIGNED) ASC,
+        size ASC,
+        CAST(lot AS UNSIGNED) ASC,
+        id_trans ASC
   ");
 
             $stmt->bind_param("s", $barcode_success);
@@ -261,25 +261,132 @@ $username = $_SESSION['username'];
 
             $result = $stmt->get_result();
 
-            $rows = [];
+            $groupedRows = [];
             $total_qty = 0;
             $unique_lots = [];
 
+            // Ambil data dan lakukan grouping.
             while ($r = $result->fetch_assoc()) {
-              $rows[] = $r;
 
               $total_qty += (float)($r['qty_sm_subcont'] ?? 0);
 
-              if (!empty($r['lot'])) {
-                $unique_lots[$r['lot']] = true;
+              $lot = trim((string)($r['lot'] ?? ''));
+
+              if ($lot !== '') {
+                $unique_lots[$lot] = true;
               }
+
+              // Group berdasarkan informasi yang sama.
+              $groupKey = json_encode([
+                $r['bucket'],
+                $r['model'],
+                $r['style'],
+                $r['size'],
+                $r['nm_komponen_in']
+              ]);
+
+              if (!isset($groupedRows[$groupKey])) {
+
+                $groupedRows[$groupKey] = [
+                  'bucket' => $r['bucket'],
+                  'model' => $r['model'],
+                  'style' => $r['style'],
+                  'size' => $r['size'],
+                  'nm_komponen_in' => $r['nm_komponen_in'],
+                  'lots' => [],
+                  'qty_sm_subcont' => 0,
+                  'transac_by' => $r['transac_by'],
+                  'updated_at' => $r['updated_at']
+                ];
+              }
+
+              // Simpan Lot unik.
+              if ($lot !== '') {
+                $groupedRows[$groupKey]['lots'][$lot] = $lot;
+              }
+
+              // Akumulasi quantity.
+              $groupedRows[$groupKey]['qty_sm_subcont'] +=
+                (float)($r['qty_sm_subcont'] ?? 0);
             }
 
             $stmt->close();
 
+            // Format daftar Lot menjadi range.
+            $formatLotRanges = function ($lots) {
+
+              $lots = array_values(array_unique($lots));
+
+              // Urutkan Lot secara numerik.
+              usort($lots, function ($a, $b) {
+                return (float)$a <=> (float)$b;
+              });
+
+              $result = [];
+              $start = null;
+              $end = null;
+
+              foreach ($lots as $lot) {
+
+                if (!is_numeric($lot)) {
+                  if ($start !== null) {
+                    $result[] = ($start == $end)
+                      ? (string)$start
+                      : "{$start}-{$end}";
+
+                    $start = null;
+                    $end = null;
+                  }
+
+                  $result[] = (string)$lot;
+                  continue;
+                }
+
+                $number = (int)$lot;
+
+                if ($start === null) {
+                  $start = $number;
+                  $end = $number;
+                } elseif ($number === $end + 1) {
+                  $end = $number;
+                } else {
+
+                  $result[] = ($start == $end)
+                    ? (string)$start
+                    : "{$start}-{$end}";
+
+                  $start = $number;
+                  $end = $number;
+                }
+              }
+
+              if ($start !== null) {
+                $result[] = ($start == $end)
+                  ? (string)$start
+                  : "{$start}-{$end}";
+              }
+
+              return implode(', ', $result);
+            };
+
+            // Siapkan data final untuk tabel.
+            $rows = [];
+
+            foreach ($groupedRows as $group) {
+
+              $group['lot_display'] = $formatLotRanges(
+                array_values($group['lots'])
+              );
+
+              unset($group['lots']);
+
+              $rows[] = $group;
+            }
+
             $first = $rows[0] ?? null;
             $total_rows = count($rows);
             $total_lot = count($unique_lots);
+
             ?>
 
             <?php if ($first): ?>
@@ -461,7 +568,7 @@ $username = $_SESSION['username'];
                                 <!-- LOT -->
                                 <td>
                                   <span class="fw-semibold">
-                                    <?= htmlspecialchars($r['lot'] ?? '-') ?>
+                                    <?= htmlspecialchars($r['lot_display'] ?? '-') ?>
                                   </span>
                                 </td>
 

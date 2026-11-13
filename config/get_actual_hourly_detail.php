@@ -18,10 +18,10 @@ $gate = '';
 
 if ($process == 'IN') {
 
-    $gate = 'SM_SUBCONT_FROM_CUT';
+    $gate = 'IN_SM_SUBCONT';
 } else {
 
-    $gate = 'WH_SUBCONT_FROM_SM_SUBCONT';
+    $gate = 'OUT_SM_SUBCONT';
 }
 
 $joinTime = "";
@@ -73,7 +73,7 @@ SUM(te.qty) AS qty
 
 FROM tbl_transaksi_event te
 
-INNER JOIN tbl_transaksi t
+INNER JOIN tbl_transactions t
 
 ON t.id_trans=te.id_trans
 

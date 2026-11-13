@@ -84,7 +84,7 @@ try {
                 SELECT DISTINCT
                     bucket AS id,
                     bucket AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE bucket LIKE ?
             ";
 
@@ -106,7 +106,7 @@ try {
                 SELECT DISTINCT
                     ncvs AS id,
                     ncvs AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE ncvs LIKE ?
             ";
 
@@ -127,7 +127,7 @@ try {
                 SELECT DISTINCT
                     po_code AS id,
                     po_code AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE po_code LIKE ?
             ";
 
@@ -148,7 +148,7 @@ try {
                 SELECT DISTINCT
                     po_item AS id,
                     po_item AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE po_item LIKE ?
             ";
 
@@ -169,7 +169,7 @@ try {
                 SELECT DISTINCT
                     job_order AS id,
                     job_order AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE job_order LIKE ?
             ";
 
@@ -190,7 +190,7 @@ try {
                 SELECT DISTINCT
                     style AS id,
                     style AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE style LIKE ?
             ";
 
@@ -211,7 +211,7 @@ try {
                 SELECT DISTINCT
                     model AS id,
                     model AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE model LIKE ?
             ";
 
@@ -232,7 +232,7 @@ try {
                 SELECT DISTINCT
                     nm_vendor AS id,
                     nm_vendor AS text
-                FROM tbl_transaksi
+                FROM tbl_transactions
                 WHERE nm_vendor LIKE ?
             ";
 
@@ -254,7 +254,7 @@ try {
             SELECT DISTINCT
                 nm_komponen_in AS id,
                 nm_komponen_in AS text
-            FROM tbl_transaksi
+            FROM tbl_transactions
             WHERE
                 is_main_komponen = 1
                 AND nm_komponen_in COLLATE utf8mb4_general_ci LIKE ?

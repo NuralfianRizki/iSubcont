@@ -28,17 +28,17 @@ $gateMap = [
 
     "incoming_wh" => [
 
-        "in" => "WH_SUBCONT_FROM_SM_SUBCONT",
+        "in" => "IN_WH_SUBCONT",
 
-        "out" => "WH_SUBCONT_TO_VENDOR"
+        "out" => "OUT_WH_SUBCONT"
 
     ],
 
     "return_wh" => [
 
-        "in" => "WH_SUBCONT_FROM_VENDOR",
+        "in" => "IN_WH_FROM_VENDOR",
 
-        "out" => "SM_SUBCONT_FROM_WH_SUBCONT"
+        "out" => "OUT_WH_TO_SM"
 
     ]
 
@@ -107,7 +107,7 @@ SELECT
 
 FROM tbl_transaksi_event te
 
-INNER JOIN tbl_transaksi t
+INNER JOIN tbl_transactions t
 ON t.id_trans = te.id_trans
 
 WHERE
@@ -163,7 +163,7 @@ SELECT
 
 FROM tbl_transaksi_event te
 
-INNER JOIN tbl_transaksi t
+INNER JOIN tbl_transactions t
 ON t.id_trans = te.id_trans
 
 WHERE

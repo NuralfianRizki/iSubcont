@@ -272,6 +272,29 @@ usort($officialSizes, function ($a, $b) {
     : strnatcasecmp($a, $b);
 });
 
+$userNcvs = '';
+if (!empty($_SESSION['nik_user'])) {
+  $nikUser = $_SESSION['nik_user'];
+
+  $stmtUser = mysqli_prepare(
+    $conn,
+    "SELECT ncvs
+         FROM tbl_user
+         WHERE nik_user = ?
+         LIMIT 1"
+  );
+
+  mysqli_stmt_bind_param($stmtUser, "s", $nikUser);
+  mysqli_stmt_execute($stmtUser);
+
+  $resultUser = mysqli_stmt_get_result($stmtUser);
+  $userData = mysqli_fetch_assoc($resultUser);
+
+  $userNcvs = $userData['ncvs'] ?? '';
+
+  mysqli_stmt_close($stmtUser);
+}
+
 ?>
 
 <style>
@@ -646,7 +669,6 @@ usort($officialSizes, function ($a, $b) {
       </h1>
     </div>
 
-
     <section class="section">
       <div class="row">
         <div class="col-lg-12">
@@ -680,7 +702,6 @@ usort($officialSizes, function ($a, $b) {
                                   'UTF-8'
                                 ) ?>">
               </div>
-
 
               <div class="container mt-4">
 
@@ -853,6 +874,7 @@ usort($officialSizes, function ($a, $b) {
                                       data-job-order="<?= htmlspecialchars($jobOrder, ENT_QUOTES, 'UTF-8') ?>"
                                       data-lot="<?= htmlspecialchars((string) $lot, ENT_QUOTES, 'UTF-8') ?>"
                                       data-size="<?= htmlspecialchars($size, ENT_QUOTES, 'UTF-8') ?>"
+                                      data-ncvs="<?= htmlspecialchars($jobInfo['ncvs'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
                                       data-qty="<?= (int) $val ?>"
                                       data-plan-qty="<?= (int) $val ?>">
                                   </div>
@@ -918,10 +940,20 @@ usort($officialSizes, function ($a, $b) {
                 <?php endif; ?>
 
                 <div id="selection-panel" class="alert alert-info d-none">
-                  <span id="selection-info"></span>
-                  <button class="btn btn-primary btn-sm" id="btn-next">
-                    Lanjutkan
-                  </button>
+                  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div>
+                      <div class="fw-bold">Selection Summary :</div>
+                      <div id="selection-info" class="small"></div>
+                    </div>
+
+                    <button class="btn btn-primary btn-sm" id="btn-next">
+                      Lanjutkan <i class="bi bi-arrow-right"></i>
+                    </button>
+                  </div>
+
+                  <div class="mt-2 pt-2 border-top">
+                    <div id="ncvs-status"></div>
+                  </div>
                 </div>
 
               </div>
@@ -975,6 +1007,20 @@ usort($officialSizes, function ($a, $b) {
                   </div>
 
                 </div>
+              </div>
+            </div>
+
+            <!-- ===================== -->
+            <!-- NCVS VALIDATION INFO -->
+            <!-- ===================== -->
+            <div class="card border-0 shadow-sm mb-3">
+              <div class="card-body p-3">
+                <div class="fw-bold mb-2">
+                  <i class="bi bi-shield-check me-1"></i>
+                  Informasi NCVS
+                </div>
+
+                <div id="m-ncvs-status"></div>
               </div>
             </div>
 
@@ -1084,15 +1130,6 @@ usort($officialSizes, function ($a, $b) {
 
           </div>
 
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-success px-4"
-              id="btn-tapping-next">
-              Lanjutkan <i class="bi bi-arrow-right ms-1"></i>
-            </button>
-          </div>
-
         </div>
       </div>
     </div>
@@ -1199,31 +1236,29 @@ usort($officialSizes, function ($a, $b) {
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
-  
   <script>
-
-  let printerDevice = null;
-  let printerServer = null;
-  let printerCharacteristic = null;
+    let printerDevice = null;
+    let printerServer = null;
+    let printerCharacteristic = null;
 
     async function sendBluetoothData(data) {
       if (!printerCharacteristic) {
-          throw new Error('Printer Bluetooth belum terhubung.');
+        throw new Error('Printer Bluetooth belum terhubung.');
       }
 
       const chunkSize = 20;
 
       for (let i = 0; i < data.length; i += chunkSize) {
-          const chunk = data.slice(i, i + chunkSize);
+        const chunk = data.slice(i, i + chunkSize);
 
-          if (printerCharacteristic.properties.writeWithoutResponse) {
-              await printerCharacteristic.writeValueWithoutResponse(chunk);
-          } else {
-              await printerCharacteristic.writeValueWithResponse(chunk);
-          }
+        if (printerCharacteristic.properties.writeWithoutResponse) {
+          await printerCharacteristic.writeValueWithoutResponse(chunk);
+        } else {
+          await printerCharacteristic.writeValueWithResponse(chunk);
+        }
 
-          // Beri jeda agar buffer printer tidak penuh.
-          await new Promise(resolve => setTimeout(resolve, 15));
+        // Beri jeda agar buffer printer tidak penuh.
+        await new Promise(resolve => setTimeout(resolve, 15));
       }
     }
 
@@ -1237,7 +1272,9 @@ usort($officialSizes, function ($a, $b) {
       const canvas = document.createElement('canvas');
       canvas.width = printWidth;
       canvas.height = printHeight;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const ctx = canvas.getContext('2d', {
+        willReadFrequently: true
+      });
       ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(0, 0, printWidth, printHeight);
       ctx.drawImage(sourceCanvas, 0, 0, printWidth, printHeight);
@@ -1279,193 +1316,354 @@ usort($officialSizes, function ($a, $b) {
       const total = parts.reduce((sum, part) => sum + part.length, 0);
       const output = new Uint8Array(total);
       let offset = 0;
-      for (const part of parts) { output.set(part, offset); offset += part.length; }
+      for (const part of parts) {
+        output.set(part, offset);
+        offset += part.length;
+      }
       return output;
     }
 
-    function escPosText(value) { return printerTextBytes(value + '\n'); }
-    function escPosCommand(...bytes) { return new Uint8Array(bytes); }
+    function escPosText(value) {
+      return printerTextBytes(value + '\n');
+    }
+
+    function escPosCommand(...bytes) {
+      return new Uint8Array(bytes);
+    }
 
     async function printHybridLabel(label, bwipjs) {
       const parts = [];
-      const cmd = (...bytes) => parts.push(new Uint8Array(bytes));
-      const text = value => parts.push(printerTextBytes(String(value ?? '') + '\n'));
-      const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
-      const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-      })[char]);
 
-      // 1. HEADER: HTML/CSS dirender menjadi bitmap untuk printer.
-      const header = document.createElement('div');
-      header.style.cssText = `
-        position: fixed; left: -10000px; top: 0;
-        width: 384px; box-sizing: border-box;
-        padding: 14px 20px 12px;
-        background: #ffffff; color: #000000;
-        font-family: Arial, sans-serif;
-      `;
+      const cmd = (...bytes) => {
+        parts.push(new Uint8Array(bytes));
+      };
 
-      const lotVendor = [
-        label.lot_range ? `LOT ${label.lot_range}` : '',
-        label.nm_vendor || ''
-      ].filter(Boolean).join(' | ');
+      const text = value => {
+        parts.push(printerTextBytes(String(value ?? '') + '\n'));
+      };
+
+      const clean = value =>
+        String(value ?? '').replace(/\s+/g, ' ').trim();
+
+      // =====================================================
+      // 1. KONFIGURASI PRINTER 58 MM - FONT A
+      // =====================================================
+
+      const COLS = 32;
+
+      const size = clean(label.size) || '-';
+      const quantity = clean(label.total_qty) || '0';
+      const bucket = clean(label.bucket) || '-';
+      const ncvs = clean(label.ncvs) || '-';
+      const model = clean(label.model) || '-';
+      const style = clean(label.style) || '-';
+
+      const totalOrder =
+        label.total_qty_order !== undefined &&
+        label.total_qty_order !== null ?
+        Number(label.total_qty_order).toLocaleString('id-ID') :
+        '-';
+
+      const lot = clean(label.lot_range) || '-';
+      const vendor = clean(label.nm_vendor) || '-';
 
       const mainComponentName = clean(
-        label.nm_main_input || label.main_component ||
-        label.main_component_name || label.nm_group || ''
-      );
+        label.nm_main_input ||
+        label.main_component ||
+        label.main_component_name ||
+        label.nm_group ||
+        ''
+      ) || '-';
 
-      header.innerHTML = `
-        <div style="display:grid;grid-template-columns:115px minmax(0,1fr);column-gap:12px;align-items:start;">
-          <div style="text-align:center;">
-            <div style="font-size:48px;font-weight:700;line-height:1.18;">${escapeHtml(label.size)}</div>
-            <div style="font-size:48px;font-weight:700;line-height:1.18;margin-top:8px;">${escapeHtml(label.total_qty)}</div>
-          </div>
-          <div style="min-width:0;font-size:22px;font-weight:700;line-height:1.35;overflow-wrap:anywhere;">
-            <div>${escapeHtml([clean(label.bucket), clean(label.ncvs)].filter(Boolean).join(' - '))}</div>
-            <div>${escapeHtml(label.model)}</div>
-            <div>${escapeHtml(label.style)}</div>
-          </div>
-        </div>
-        ${lotVendor ? `<div style="margin-top:14px;font-size:22px;font-weight:700;line-height:1.35;overflow-wrap:anywhere;">${escapeHtml(lotVendor)}</div>` : ''}
-        ${mainComponentName ? `<div style="margin-top:14px;font-size:27px;font-weight:700;line-height:1.3;overflow-wrap:anywhere;">${escapeHtml(mainComponentName)}</div>` : ''}
-      `;
+      const components = Array.isArray(label.group_components) ?
+        label.group_components.map(clean).filter(Boolean) : [];
 
-      document.body.appendChild(header);
-      try {
-        if (document.fonts && document.fonts.ready) await document.fonts.ready;
-        const headerCanvas = await html2canvas(header, {
-          backgroundColor: '#ffffff', scale: 2,
-          logging: false, useCORS: true
-        });
-        cmd(0x1B, 0x40);
-        cmd(0x1B, 0x61, 0x00);
-        parts.push(barcodeCanvasToEscPos(headerCanvas));
-      } finally {
-        header.remove();
+      const barcode = clean(label.barcode);
+
+      if (!barcode) {
+        throw new Error('ID barcode tidak ditemukan.');
       }
 
-      // Garis pemisah Header dan Body
-      cmd(0x1B, 0x4D, 0x01); // Font B
-      cmd(0x1B, 0x61, 0x00); // Rata kiri
-      text('-'.repeat(42));
+      // =====================================================
+      // 2. HELPER FORMAT TEXT
+      // =====================================================
 
-      // 2. BODY: daftar komponen dicetak sebagai teks ESC/POS biasa.
-      cmd(0x1B, 0x61, 0x00);
-      cmd(0x1B, 0x4D, 0x00);
-      cmd(0x1B, 0x21, 0x00);
-      cmd(0x1B, 0x45, 0x00);
+      const separator = () => text('-'.repeat(COLS));
 
-      const components = Array.isArray(label.group_components) ? label.group_components : [];
-      const COMPONENT_COLS = 30;
-
-      const wrapComponent = value => {
-        const normalized = clean(value);
-        if (!normalized) return [];
-        const words = normalized.split(' ');
+      const wrapText = (value, maxLength = COLS) => {
+        const words = clean(value).split(' ');
         const lines = [];
         let line = '';
 
         words.forEach(word => {
-          if (word.length > COMPONENT_COLS) {
-            if (line) { lines.push(line); line = ''; }
-            for (let i = 0; i < word.length; i += COMPONENT_COLS) {
-              lines.push(word.slice(i, i + COMPONENT_COLS));
+          // Pecah kata yang lebih panjang dari lebar printer.
+          if (word.length > maxLength) {
+            if (line) {
+              lines.push(line);
+              line = '';
             }
+
+            for (let i = 0; i < word.length; i += maxLength) {
+              lines.push(word.slice(i, i + maxLength));
+            }
+
             return;
           }
-          const candidate = line ? `${line} ${word}` : word;
-          if (candidate.length <= COMPONENT_COLS) line = candidate;
-          else {
+
+          const candidate = line ?
+            `${line} ${word}` :
+            word;
+
+          if (candidate.length <= maxLength) {
+            line = candidate;
+          } else {
             if (line) lines.push(line);
             line = word;
           }
         });
+
         if (line) lines.push(line);
+
         return lines;
       };
 
-      components.forEach(component => {
-        wrapComponent(component).forEach(line => text('  ' + line));
-      });
-      
-      // Garis pemisah Body dan Footer
-      cmd(0x1B, 0x4D, 0x01); // Font B
-      cmd(0x1B, 0x61, 0x00); // Rata kiri
-      text('-'.repeat(42));
+      const printWrapped = (value, maxLength = COLS) => {
+        wrapText(value, maxLength).forEach(line => text(line));
+      };
 
-      // 3. FOOTER: barcode Code128 sebagai gambar, nomor sebagai teks.
+      const printInfo = (labelText, value) => {
+        const prefix = `${labelText} : `;
+        const available = COLS - prefix.length;
+
+        const lines = wrapText(value, available);
+
+        if (lines.length === 0) {
+          text(prefix);
+          return;
+        }
+
+        text(prefix + lines[0]);
+
+        // Baris lanjutan sejajar dengan value.
+        const indent = ' '.repeat(prefix.length);
+
+        lines.slice(1).forEach(line => {
+          text(indent + line);
+        });
+      };
+
+      // =====================================================
+      // 3. INISIALISASI PRINTER
+      // =====================================================
+
+      cmd(0x1B, 0x40); // Initialize printer
+      cmd(0x1B, 0x61, 0x00); // Left alignment
+      cmd(0x1B, 0x4D, 0x00); // Font A
+      cmd(0x1B, 0x21, 0x00); // Normal character size
+      cmd(0x1B, 0x45, 0x00); // Bold OFF
+      cmd(0x1B, 0x33, 0x18); // Line spacing 24 dots
+
+      // =====================================================
+      // 4. HEADER - SIZE DAN QUANTITY (CANVAS)
+      // =====================================================
+
+      const header = document.createElement('div');
+
+      header.style.cssText = `
+    position: fixed;
+    left: -10000px;
+    top: 0;
+    width: 384px;
+    box-sizing: border-box;
+    padding: 6px 12px;
+    background: #ffffff;
+    color: #000000;
+    font-family: Arial, sans-serif;
+  `;
+
+      header.innerHTML = `
+    <div style="
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      text-align: center;
+      border-bottom: 1px dashed #000;
+    ">
+      <div style="
+        padding: 4px 2px;
+        border-right: 1px dashed #000;
+      ">
+        <div style="font-size:17px;font-weight:700;">
+          SIZE
+        </div>
+        <div style="font-size:42px;font-weight:700;line-height:1.1;">
+          ${escapeHtml(size)}
+        </div>
+      </div>
+
+      <div style="padding:4px 2px;">
+        <div style="font-size:17px;font-weight:700;">
+          QUANTITY
+        </div>
+        <div style="font-size:42px;font-weight:700;line-height:1.1;">
+          ${escapeHtml(quantity)}
+        </div>
+      </div>
+    </div>
+  `;
+
+      document.body.appendChild(header);
+
+      try {
+        if (document.fonts && document.fonts.ready) {
+          await document.fonts.ready;
+        }
+
+        const headerCanvas = await html2canvas(header, {
+          backgroundColor: '#ffffff',
+          scale: 2,
+          logging: false,
+          useCORS: true
+        });
+
+        parts.push(barcodeCanvasToEscPos(headerCanvas));
+
+      } finally {
+        header.remove();
+      }
+
+      // Reset format untuk body.
+      cmd(0x1B, 0x61, 0x00);
+      cmd(0x1B, 0x4D, 0x00);
+      cmd(0x1B, 0x21, 0x00);
+      cmd(0x1B, 0x45, 0x00);
+      cmd(0x1B, 0x33, 0x20);
+
+      // =====================================================
+      // 5. BODY - INFORMASI ORDER
+      // =====================================================
+
+      printWrapped(`${bucket} - ${ncvs}`);
+      printWrapped(model);
+      printWrapped(style);
+
+      // Total Order tetap menggunakan label
+      printInfo('Total Order', totalOrder);
+
+      // LOT dan Vendor
+      printWrapped(`LOT : ${lot} | ${vendor}`);
+
+      separator();
+
+      // =====================================================
+      // 6. MAIN COMPONENT - BOLD
+      // =====================================================
+
+      cmd(0x1B, 0x45, 0x01); // Bold ON
+
+      printWrapped(mainComponentName);
+
+      cmd(0x1B, 0x45, 0x00); // Bold OFF
+
+      separator();
+
+      // =====================================================
+      // 7. GROUP COMPONENT
+      // =====================================================
+
+      if (components.length > 0) {
+        components.forEach(component => {
+          printWrapped(component);
+        });
+      } else {
+        text('-');
+      }
+
+      separator();
+
+      // =====================================================
+      // 8. FOOTER - BARCODE CODE128 IMAGE
+      // =====================================================
+
       const barcodeCanvas = document.createElement('canvas');
+
       bwipjs.toCanvas(barcodeCanvas, {
         bcid: 'code128',
-        text: String(label.barcode),
+        text: barcode,
         scale: 2,
         height: 8,
         includetext: false,
         backgroundcolor: 'FFFFFF'
       });
 
+      // Barcode rata tengah.
       cmd(0x1B, 0x61, 0x01);
       parts.push(barcodeCanvasToEscPos(barcodeCanvas));
-      cmd(0x1B, 0x4D, 0x00);
-      cmd(0x1B, 0x21, 0x00);
+
+      // Nomor barcode menggunakan Font B agar lebih kecil.
+      cmd(0x1B, 0x4D, 0x01);
       cmd(0x1B, 0x45, 0x00);
-      text(String(label.barcode));
+      cmd(0x1B, 0x21, 0x00);
+
+      text(barcode);
+
+      // =====================================================
+      // 9. SELESAI
+      // =====================================================
 
       cmd(0x1B, 0x61, 0x00);
-      cmd(0x1B, 0x32);
+      cmd(0x1B, 0x32); // Default line spacing
       text('');
 
       await sendBluetoothData(concatPrintBytes(parts));
     }
 
-  // async function testPrintRPP02N() {
-  //   try {
-  //       if (!printerCharacteristic) {
-  //           throw new Error('Printer belum terhubung.');
-  //       }
+    // async function testPrintRPP02N() {
+    //   try {
+    //       if (!printerCharacteristic) {
+    //           throw new Error('Printer belum terhubung.');
+    //       }
 
-  //       const encoder = new TextEncoder();
+    //       const encoder = new TextEncoder();
 
-  //       const init = new Uint8Array([0x1B, 0x40]);
+    //       const init = new Uint8Array([0x1B, 0x40]);
 
-  //       const text = encoder.encode(
-  //           'ISUBCONT\n' +
-  //           'BLUETOOTH PRINT TEST\n' +
-  //           'RONGTA RPP02N\n' +
-  //           '--------------------------\n' +
-  //           'Printer BLE berhasil!\n\n\n'
-  //       );
+    //       const text = encoder.encode(
+    //           'ISUBCONT\n' +
+    //           'BLUETOOTH PRINT TEST\n' +
+    //           'RONGTA RPP02N\n' +
+    //           '--------------------------\n' +
+    //           'Printer BLE berhasil!\n\n\n'
+    //       );
 
-  //       const data = new Uint8Array([
-  //           ...init,
-  //           ...text
-  //       ]);
+    //       const data = new Uint8Array([
+    //           ...init,
+    //           ...text
+    //       ]);
 
-  //       await sendBluetoothData(data);
+    //       await sendBluetoothData(data);
 
-  //       alert('Data tes berhasil dikirim ke printer.');
+    //       alert('Data tes berhasil dikirim ke printer.');
 
-  //   } catch (error) {
-  //       console.error('Gagal mencetak:', error);
-  //       alert('Gagal mencetak: ' + error.message);
-  //   }
-  // }
+    //   } catch (error) {
+    //       console.error('Gagal mencetak:', error);
+    //       alert('Gagal mencetak: ' + error.message);
+    //   }
+    // }
 
 
-  const PRINTER_SERVICE_UUID =
+    const PRINTER_SERVICE_UUID =
       '000018f0-0000-1000-8000-00805f9b34fb';
 
-  const PRINTER_CHARACTERISTIC_UUID =
+    const PRINTER_CHARACTERISTIC_UUID =
       '00002af1-0000-1000-8000-00805f9b34fb';
 
-  async function connectBluetoothPrinter(device) {
+    async function connectBluetoothPrinter(device) {
       printerDevice = device;
 
       printerServer = await device.gatt.connect();
 
       printerCharacteristic = await (
-          await printerServer.getPrimaryService(PRINTER_SERVICE_UUID)
+        await printerServer.getPrimaryService(PRINTER_SERVICE_UUID)
       ).getCharacteristic(PRINTER_CHARACTERISTIC_UUID);
       console.log('Printer:', device.name);
       console.log('Service UUID:', PRINTER_SERVICE_UUID);
@@ -1473,14 +1671,14 @@ usort($officialSizes, function ($a, $b) {
       console.log('Characteristic properties:', printerCharacteristic.properties);
 
       if (
-          !printerCharacteristic.properties.write &&
-          !printerCharacteristic.properties.writeWithoutResponse
+        !printerCharacteristic.properties.write &&
+        !printerCharacteristic.properties.writeWithoutResponse
       ) {
-          throw new Error('Characteristic printer tidak mendukung pengiriman data.');
+        throw new Error('Characteristic printer tidak mendukung pengiriman data.');
       }
 
       console.log('Printer Bluetooth terhubung:', device.name);
-  }
+    }
   </script>
 
   <script>
@@ -1550,6 +1748,9 @@ usort($officialSizes, function ($a, $b) {
   </script>
 
   <script>
+    // NCVS USER LOGIN
+    const USER_NCVS = <?= json_encode((string)$userNcvs) ?>;
+
     // GLOBAL DATA
     const komponenEl = document.getElementById('komponen-data');
 
@@ -1674,31 +1875,90 @@ usort($officialSizes, function ($a, $b) {
       if ($cells.length === 0) {
         $('#selection-panel').addClass('d-none');
         $('#selection-info').text('');
+        $('#ncvs-status').empty();
         return;
       }
 
       const lots = new Set();
       const sizes = new Set();
+      const ncvss = new Set();
+
       let totalQty = 0;
 
       $cells.each(function() {
         const jobOrder = this.dataset.jobOrder;
         const lot = this.dataset.lot;
         const size = this.dataset.size;
+        const ncvs = String(this.dataset.ncvs || '').trim();
         const qty = getFinalQty(this);
 
         // LOT dengan nomor sama di JO berbeda dihitung terpisah.
         lots.add(`${jobOrder}::${lot}`);
         sizes.add(size);
+
+        if (ncvs) {
+          ncvss.add(ncvs);
+        }
+
         totalQty += qty;
       });
 
+      // Informasi selection tetap menggunakan format existing.
       $('#selection-info').text(
         `${lots.size} LOT | ${sizes.size} SIZE | ` +
         `${$cells.length} item | Qty: ${totalQty} | ` +
         `Mode: ${getSelectionMode()}`
       );
 
+      const userNcvs = String(USER_NCVS).trim();
+      const selectedNcvs = [...ncvss];
+
+      const isMatch =
+        userNcvs !== '' &&
+        selectedNcvs.length === 1 &&
+        selectedNcvs[0] === userNcvs;
+
+      let statusHtml = '';
+
+      if (isMatch) {
+        statusHtml = `
+            <div class="d-flex align-items-center flex-wrap gap-2">
+                <span class="badge bg-success">
+                    <i class="bi bi-check-circle"></i>
+                    NCVS Sesuai
+                </span>
+
+                <small>
+                    NCVS User: <strong>${escapeHtml(userNcvs)}</strong>
+                    | NCVS Data: <strong>${escapeHtml(selectedNcvs[0])}</strong>
+                </small>
+            </div>
+        `;
+      } else {
+        statusHtml = `
+            <div class="d-flex flex-column gap-1">
+                <div class="d-flex align-items-center flex-wrap gap-2">
+                    <span class="badge bg-warning text-dark">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        NCVS Berbeda
+                    </span>
+
+                    <small>
+                        NCVS User: <strong>${escapeHtml(userNcvs)}</strong>
+                        | NCVS Data:
+                        <strong>${selectedNcvs.map(escapeHtml).join(', ')}</strong>
+                    </small>
+                </div>
+
+                <small class="text-warning-emphasis">
+                    Data yang dipilih berasal dari NCVS berbeda.
+                    Pastikan pemilihan data sudah sesuai.
+                </small>
+            </div>
+        `;
+      }
+
+      $('#ncvs-status').html(statusHtml);
       $('#selection-panel').removeClass('d-none');
     }
 
@@ -1707,7 +1967,6 @@ usort($officialSizes, function ($a, $b) {
       updateSizeHeaderState();
       updateSelectionPanel();
     }
-
 
     function showQtyTooltip(input, message) {
       let tooltip = bootstrap.Tooltip.getInstance(input);
@@ -1748,7 +2007,7 @@ usort($officialSizes, function ($a, $b) {
         value <= planQty;
 
       if (!isValid) {
-        let message = 'Qty harus bilangan bulat minimal 1.';
+        let message = 'Qty minimal 1, jika tidak, hapus centang item ini.';
 
         if (value > planQty) {
           message = `Qty tidak boleh melebihi PLAN QTY ${planQty}.`;
@@ -1951,7 +2210,6 @@ usort($officialSizes, function ($a, $b) {
         .replace(/'/g, '&#039;');
     }
 
-
     // SHOW MODAL
     $('#btn-next').on('click', function() {
 
@@ -2121,7 +2379,12 @@ usort($officialSizes, function ($a, $b) {
       $('#m-komponen').html(komponenHtml);
 
       // =========================
-      // 4. OPEN MODAL
+      // 4. UPDATE INFORMASI NCVS
+      // =========================
+      $('#m-ncvs-status').html($('#ncvs-status').html());
+
+      // =========================
+      // 5. OPEN MODAL
       // =========================
       const modal = new bootstrap.Modal(document.getElementById('modalKonfirmasi'));
       modal.show();
@@ -2198,10 +2461,6 @@ usort($officialSizes, function ($a, $b) {
         'Tapping ID User'
       );
 
-      $('#btn-tapping-next').html(
-        'Lanjutkan <i class="bi bi-arrow-right ms-1"></i>'
-      );
-
       // Tutup modal pertama, lalu buka modal tapping.
       const firstModalEl = document.getElementById('modalKonfirmasi');
       const firstModal = bootstrap.Modal.getInstance(firstModalEl);
@@ -2233,25 +2492,25 @@ usort($officialSizes, function ($a, $b) {
       }
     }
     window.onBluetoothPrintCompleted = function() {
-        const modal = bootstrap.Modal.getOrCreateInstance(
-            document.getElementById('modalPrintResult')
-        );
+      const modal = bootstrap.Modal.getOrCreateInstance(
+        document.getElementById('modalPrintResult')
+      );
 
-        modal.show();
+      modal.show();
 
-        showSuccess('Data label berhasil dikirim ke printer Bluetooth. Periksa hasil cetaknya.');
+      showSuccess('Data label berhasil dikirim ke printer Bluetooth. Periksa hasil cetak barcodenya.');
     };
 
     window.onBluetoothPrintFailed = function(message) {
-        console.error('Pencetakan gagal:', message);
+      console.error('Pencetakan gagal:', message);
 
-        const modal = bootstrap.Modal.getOrCreateInstance(
-            document.getElementById('modalPrintResult')
-        );
+      const modal = bootstrap.Modal.getOrCreateInstance(
+        document.getElementById('modalPrintResult')
+      );
 
-        modal.show();
+      modal.show();
 
-        showError('Pengiriman label gagal: ' + message);
+      showError('Pengiriman label gagal: ' + message);
     };
 
     // Fokus input setiap kali modal tapping selesai ditampilkan.
@@ -2406,9 +2665,6 @@ usort($officialSizes, function ($a, $b) {
       $('#btn-submit-barcode').prop('disabled', checked === 0);
     });
 
-
-    $('#btn-tapping-next').addClass('d-none');
-
     $('#tapping-user-id')
       .off('keydown.tappingValidation')
       .on('keydown.tappingValidation', function(e) {
@@ -2430,30 +2686,6 @@ usort($officialSizes, function ($a, $b) {
           return;
         }
 
-
-        const isFinalTapping =
-          (tappingMode === 'PLAN' && tappingStage === 'USER') ||
-          (tappingMode === 'CUSTOM' && tappingStage === 'LEADER');
-
-        let printerSelectionPromise = null;
-
-        if (isFinalTapping) {
-            if (!navigator.bluetooth) {
-                alert('Browser tidak mendukung Web Bluetooth. Gunakan Chrome atau Edge melalui HTTPS/localhost.');
-                return;
-            }
-
-            // Dipanggil langsung saat RFID terakhir ditekan.
-            printerSelectionPromise = navigator.bluetooth.requestDevice({
-                acceptAllDevices: true,
-                optionalServices: [
-                    PRINTER_SERVICE_UUID,
-                    '00001800-0000-1000-8000-00805f9b34fb',
-                    '00001801-0000-1000-8000-00805f9b34fb'
-                ]
-            });
-        }
-
         tappingValidationInProgress = true;
         $input.prop('disabled', true);
 
@@ -2473,7 +2705,7 @@ usort($officialSizes, function ($a, $b) {
             stage: tappingStage
           },
 
-          success: function(res) {
+          success: async function(res) {
             if (res.status !== 'success') {
 
               $message
@@ -2512,75 +2744,188 @@ usort($officialSizes, function ($a, $b) {
               return;
             }
 
+            // ===================================
+            // VALIDASI TAPPING TERAKHIR BERHASIL
+            // ===================================
+
             tappingStage = 'DONE';
 
             $message
               .removeClass('d-none alert-danger alert-info')
               .addClass('alert-success')
-              .text('Validasi selesai. Menyiapkan label untuk dicetak...');
+              .text('Validasi berhasil. Membuka koneksi Bluetooth...');
 
-            $input.val('');
+            $input.val('').prop('disabled', true);
 
-            // Ambil label yang siap dicetak untuk sesi ini.
-            $.ajax({
-              url: './../config/function.php',
-              method: 'POST',
-              dataType: 'json',
-              data: {
-                action: 'get-print-labels'
-              },
+            // Pastikan browser mendukung Web Bluetooth.
+            if (!navigator.bluetooth) {
+              $message
+                .removeClass('alert-success')
+                .addClass('alert-danger')
+                .text('Browser tidak mendukung Web Bluetooth. Gunakan Chrome atau Edge melalui HTTPS/localhost.');
 
-              success: async function(printRes) {
-                try {
+              return;
+            }
+
+            try {
+              // Popup Bluetooth baru dipanggil setelah validasi NCVS berhasil.
+              const device = await navigator.bluetooth.requestDevice({
+                acceptAllDevices: true,
+                optionalServices: [
+                  PRINTER_SERVICE_UUID,
+                  '00001800-0000-1000-8000-00805f9b34fb',
+                  '00001801-0000-1000-8000-00805f9b34fb'
+                ]
+              });
+
+              $message
+                .removeClass('alert-success alert-danger')
+                .addClass('alert-info')
+                .text('Mengambil data label, dan mencetak barcode. Tunggu sampai proses selesai...');
+
+              // Ambil label setelah user memilih printer.
+              $.ajax({
+                url: './../config/function.php',
+                method: 'POST',
+                dataType: 'json',
+                data: {
+                  action: 'get-print-labels'
+                },
+
+                success: async function(printRes) {
+                  try {
                     if (printRes.status !== 'success') {
-                        throw new Error(printRes.message || 'Gagal mengambil data label.');
+                      throw new Error(
+                        printRes.message || 'Gagal mengambil data label.'
+                      );
                     }
 
                     const labels = printRes.labels || [];
+
                     if (labels.length === 0) {
-                        throw new Error('Tidak ada label yang siap dicetak.');
+                      throw new Error('Tidak ada label yang siap dicetak.');
                     }
-                    pendingPrintBarcodes = [...new Map(labels.map(x => [String(x.barcode || ''), x])).values()]
-                      .map(x => String(x.barcode || '')).filter(Boolean);
 
-                    const device = await printerSelectionPromise;
+                    pendingPrintBarcodes = [
+                        ...new Map(
+                          labels.map(x => [String(x.barcode || ''), x])
+                        ).values()
+                      ]
+                      .map(x => String(x.barcode || ''))
+                      .filter(Boolean);
 
+                    // Hubungkan printer.
                     await connectBluetoothPrinter(device);
 
-                    console.log('Printer siap. Mulai mencetak', labels.length, 'label.');
+                    console.log(
+                      'Printer siap. Mulai mencetak',
+                      labels.length,
+                      'label.'
+                    );
+
+                    // Cetak label.
                     await printSessionLabels(labels);
-                    $('#tapping-validation-message').text('Data label berhasil dikirim ke printer. Konfirmasi hasil cetak pada dialog berikutnya.');
-                } catch (error) {
-                    console.error('Bluetooth printer/print error:', error);
-                    window.onBluetoothPrintFailed(error.message || String(error));
-                    $('#tapping-validation-message').removeClass('alert-success alert-info').addClass('alert-danger').text('Cetak Bluetooth gagal: ' + (error.message || error));
-                    $('#tapping-user-id').prop('disabled', false).val('').trigger('focus');
+
+                    $message
+                      .removeClass('alert-danger alert-info')
+                      .addClass('alert-success')
+                      .text(
+                        'Data label berhasil dikirim ke printer. ' +
+                        'Konfirmasi hasil cetak pada dialog berikutnya.'
+                      );
+
+                  } catch (error) {
+                    console.error('Bluetooth connection error:', error);
+
+                    $message
+                      .removeClass('alert-success alert-info')
+                      .addClass('alert-danger')
+                      .text(
+                        'Pengiriman label gagal: ' +
+                        (error.message || String(error))
+                      );
+
+                    window.onBluetoothPrintFailed(
+                      error.message || String(error)
+                    );
+                  }
+                },
+
+                error: function(xhr, status, error) {
+                  console.error('Get print labels HTTP status:', xhr.status);
+                  console.error('AJAX status:', status);
+                  console.error('Error:', error);
+                  console.error('Response server:', xhr.responseText);
+
+                  let message = 'Gagal mengambil data label.';
+
+                  if (xhr.responseJSON && xhr.responseJSON.message) {
+                    message += ' ' + xhr.responseJSON.message;
+                  }
+
+                  $message
+                    .removeClass('alert-success alert-info')
+                    .addClass('alert-danger')
+                    .text(message);
                 }
-            },
+              });
 
+            } catch (error) {
+              console.error('Bluetooth connection error:', error);
 
-              error: function(xhr, status, error) {
-                console.error('Get print labels HTTP status:', xhr.status);
-                console.error('AJAX status:', status);
-                console.error('Error:', error);
-                console.error('Response server:', xhr.responseText);
+              // Ambil barcode untuk konfirmasi hasil cetak.
+              try {
+                const printRes = await $.ajax({
+                  url: './../config/function.php',
+                  method: 'POST',
+                  dataType: 'json',
+                  data: {
+                    action: 'get-print-labels'
+                  }
+                });
 
-                let message = 'Gagal mengambil data label.';
+                console.log('Response get-print-labels:', printRes);
 
-                if (xhr.responseJSON && xhr.responseJSON.message) {
-                  message += ' ' + xhr.responseJSON.message;
-                } else if (xhr.responseText) {
-                  message += ' Periksa Console untuk detail respons server.';
+                if (printRes.status !== 'success') {
+                  throw new Error(
+                    printRes.message || 'Gagal mengambil data barcode.'
+                  );
                 }
 
-                $message
-                  .removeClass('alert-success alert-info')
-                  .addClass('alert-danger')
-                  .text(message);
+                const labels = printRes.labels || [];
+
+                pendingPrintBarcodes = [
+                  ...new Set(
+                    labels
+                    .map(x => String(x.barcode || '').trim())
+                    .filter(Boolean)
+                  )
+                ];
+
+                console.log('Barcode menunggu konfirmasi:', pendingPrintBarcodes);
+
+                if (pendingPrintBarcodes.length === 0) {
+                  throw new Error('Tidak ada barcode yang dikembalikan backend.');
+                }
+
+              } catch (loadError) {
+                console.error('Gagal mengambil barcode:', loadError);
+                showError('Barcode gagal dimuat: ' + loadError.message);
+                return;
               }
 
-            });
+              $message
+                .removeClass('alert-success alert-info')
+                .addClass('alert-danger')
+                .text(
+                  'Koneksi Bluetooth dibatalkan atau gagal: ' +
+                  (error.message || String(error))
+                );
 
+              window.onBluetoothPrintFailed(
+                error.message || String(error)
+              );
+            }
           },
 
           error: function(xhr, status, error) {
@@ -2621,7 +2966,7 @@ usort($officialSizes, function ($a, $b) {
         } [char];
       });
     }
-async function submitPrintResult(status) {
+    async function submitPrintResult(status) {
       if (pendingPrintBarcodes.length === 0) {
         showError('Tidak ada barcode yang menunggu konfirmasi.');
         return;
@@ -2669,11 +3014,11 @@ async function submitPrintResult(status) {
         // Tampilkan toast sesuai status yang dipilih.
         if (status === 'PRINTED') {
           showSuccess(
-            'Konfirmasi berhasil. Status barcode telah diperbarui menjadi PRINTED.'
+            'Konfirmasi berhasil. Status barcode telah diperbarui menjadi BERHASIL.'
           );
         } else {
           showError(
-            'Status barcode telah diperbarui menjadi FAILED.'
+            'Status barcode telah diperbarui menjadi GAGAL.'
           );
         }
 
@@ -2709,14 +3054,17 @@ async function submitPrintResult(status) {
     function loadPrintLibrary(url, globalName) {
       return new Promise((resolve, reject) => {
         const existing = document.querySelector('script[data-print-library="' + globalName + '"]');
-        if (existing && window[globalName]) { resolve(window[globalName]); return; }
+        if (existing && window[globalName]) {
+          resolve(window[globalName]);
+          return;
+        }
         const script = document.createElement('script');
         script.src = url;
         script.async = true;
         script.dataset.printLibrary = globalName;
-        script.onload = () => window[globalName]
-          ? resolve(window[globalName])
-          : reject(new Error(globalName + ' tidak ditemukan setelah dimuat.'));
+        script.onload = () => window[globalName] ?
+          resolve(window[globalName]) :
+          reject(new Error(globalName + ' tidak ditemukan setelah dimuat.'));
         script.onerror = () => reject(new Error('Gagal memuat ' + globalName + ' dari ' + url));
         document.head.appendChild(script);
       });
@@ -2727,11 +3075,15 @@ async function submitPrintResult(status) {
       const errors = [];
       if (!lib) {
         for (const url of [
-          'https://cdn.jsdelivr.net/npm/bwip-js@4.5.1/dist/bwip-js-min.js',
-          'https://unpkg.com/bwip-js@4.5.1/dist/bwip-js-min.js'
-        ]) {
-          try { lib = await loadPrintLibrary(url, 'bwipjs'); break; }
-          catch (e) { errors.push(e.message); }
+            'https://cdn.jsdelivr.net/npm/bwip-js@4.5.1/dist/bwip-js-min.js',
+            'https://unpkg.com/bwip-js@4.5.1/dist/bwip-js-min.js'
+          ]) {
+          try {
+            lib = await loadPrintLibrary(url, 'bwipjs');
+            break;
+          } catch (e) {
+            errors.push(e.message);
+          }
         }
       }
       lib = lib || window.bwipjs || window.bwipJS;
@@ -2743,7 +3095,7 @@ async function submitPrintResult(status) {
 
     async function printSessionLabels(labels) {
       if (!Array.isArray(labels) || labels.length === 0) {
-        throw new Error('Tidak ada label yang siap dicetak.');
+        throw new Error('Tidak ada data yang siap dicetak.');
       }
       const bwipjs = await ensureBarcodeLibrary();
       const uniqueLabels = [...new Map(labels.map(x => [String(x.barcode || ''), x])).values()]
@@ -2763,9 +3115,7 @@ async function submitPrintResult(status) {
         throw error;
       }
     }
-
   </script>
-
 
 </body>
 

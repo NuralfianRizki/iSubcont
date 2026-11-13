@@ -20,52 +20,52 @@ switch ($stage) {
 
     case 'SM Subcont In':
 
-        $actualField = 'qty_smsubcont_fr_cut';
+        $actualField = 'qty_sm_subcont';
         break;
 
     case 'SM Subcont Out':
 
-        $actualField = 'qty_smsubcont_to_whsubcont';
+        $actualField = 'qty_send_to_wh';
         break;
 
     case 'WH Subcont In':
 
-        $actualField = 'qty_whsubcont_fr_smsubcont';
+        $actualField = 'qty_wh_from_sm';
         break;
 
     case 'WH Subcont Out':
 
-        $actualField = 'qty_whsubcont_to_vendor';
+        $actualField = 'qty_send_to_vendor';
         break;
 
     case 'Vendor Subcont In':
 
-        $actualField = 'qty_vendor_fr_whsubcont';
+        $actualField = 'qty_vendor_from_wh';
         break;
 
     case 'Vendor Subcont Out':
 
-        $actualField = 'qty_vendor_to_whsubcont';
+        $actualField = 'qty_vendor_send_wh';
         break;
 
     case 'Return WH Subcont':
 
-        $actualField = 'qty_whsubcont_fr_vendor';
+        $actualField = 'qty_wh_from_vendor';
         break;
 
     case 'Transfer to SM Subcont':
 
-        $actualField = 'qty_whsubcont_to_smsubcont';
+        $actualField = 'qty_wh_send_sm';
         break;
 
     case 'Return SM Subcont':
 
-        $actualField = 'qty_smsubcont_fr_whsubcont';
+        $actualField = 'qty_sm_from_wh';
         break;
 
     case 'Transfer to NCVS':
 
-        $actualField = 'qty_smsubcont_to_prod';
+        $actualField = 'qty_sm_send_prod';
         break;
 
     default:
@@ -86,7 +86,7 @@ SELECT
 
     SUM($actualField) actual
 
-FROM tbl_transaksi
+FROM tbl_transactions
 
 WHERE
 

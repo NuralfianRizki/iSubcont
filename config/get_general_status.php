@@ -159,48 +159,24 @@ SELECT
         AS total_order,
 
     /* ===================================== */
-    /* SM CUTTING */
-    /* ===================================== */
-
-    SUM(IFNULL(qty_cut_to_smsubcont,0))
-        AS sm_cutting_in,
-
-    (
-        SUM(IFNULL(qty_cut_to_smsubcont,0))
-        -
-        SUM(IFNULL(qty_plan,0))
-    )
-        AS sm_cutting_balance,
-
-    SUM(IFNULL(qty_smsubcont_fr_cut,0))
-        AS sm_cutting_out,
-
-    (
-        SUM(IFNULL(qty_smsubcont_fr_cut,0))
-        -
-        SUM(IFNULL(qty_cut_to_smsubcont,0))
-    )
-        AS sm_cutting_out_balance,
-
-    /* ===================================== */
     /* SM SUBCONT */
     /* ===================================== */
 
-    SUM(IFNULL(qty_smsubcont_fr_cut,0))
+    SUM(IFNULL(qty_sm_subcont,0))
         AS in_sm,
 
     (
-        SUM(IFNULL(qty_smsubcont_fr_cut,0))
+        SUM(IFNULL(qty_sm_subcont,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
         AS balance_in_sm,
 
-    SUM(IFNULL(qty_smsubcont_to_whsubcont,0))
+    SUM(IFNULL(qty_send_to_wh,0))
         AS out_sm,
 
     (
-        SUM(IFNULL(qty_smsubcont_to_whsubcont,0))
+        SUM(IFNULL(qty_send_to_wh,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
@@ -210,21 +186,21 @@ SELECT
     /* WH SUBCONT */
     /* ===================================== */
 
-    SUM(IFNULL(qty_whsubcont_fr_smsubcont,0))
+    SUM(IFNULL(qty_wh_from_sm,0))
         AS in_wh,
 
     (
-        SUM(IFNULL(qty_whsubcont_fr_smsubcont,0))
+        SUM(IFNULL(qty_wh_from_sm,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
         AS balance_in_wh,
 
-    SUM(IFNULL(qty_whsubcont_to_vendor,0))
+    SUM(IFNULL(qty_send_to_vendor,0))
         AS out_wh,
 
     (
-        SUM(IFNULL(qty_whsubcont_to_vendor,0))
+        SUM(IFNULL(qty_send_to_vendor,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
@@ -234,21 +210,21 @@ SELECT
     /* VENDOR */
     /* ===================================== */
 
-    SUM(IFNULL(qty_vendor_fr_whsubcont,0))
+    SUM(IFNULL(qty_vendor_from_wh,0))
         AS in_vendor,
 
     (
-        SUM(IFNULL(qty_vendor_fr_whsubcont,0))
+        SUM(IFNULL(qty_vendor_from_wh,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
         AS balance_in_vendor,
 
-    SUM(IFNULL(qty_vendor_to_whsubcont,0))
+    SUM(IFNULL(qty_vendor_send_wh,0))
         AS out_vendor,
 
     (
-        SUM(IFNULL(qty_vendor_to_whsubcont,0))
+        SUM(IFNULL(qty_vendor_send_wh,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
@@ -258,21 +234,21 @@ SELECT
     /* RETURN WH */
     /* ===================================== */
 
-    SUM(IFNULL(qty_whsubcont_fr_vendor,0))
+    SUM(IFNULL(qty_wh_from_vendor,0))
         AS return_wh,
 
     (
-        SUM(IFNULL(qty_whsubcont_fr_vendor,0))
+        SUM(IFNULL(qty_wh_from_vendor,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
         AS balance_return_wh,
 
-    SUM(IFNULL(qty_whsubcont_to_smsubcont,0))
+    SUM(IFNULL(qty_wh_send_sm,0))
         AS transfer_sm,
 
     (
-        SUM(IFNULL(qty_whsubcont_to_smsubcont,0))
+        SUM(IFNULL(qty_wh_send_sm,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
@@ -282,11 +258,11 @@ SELECT
     /* RETURN SM */
     /* ===================================== */
 
-    SUM(IFNULL(qty_smsubcont_fr_whsubcont,0))
+    SUM(IFNULL(qty_sm_from_wh,0))
         AS return_sm,
 
     (
-        SUM(IFNULL(qty_smsubcont_fr_whsubcont,0))
+        SUM(IFNULL(qty_sm_from_wh,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
@@ -296,17 +272,17 @@ SELECT
     /* TRANSFER NCVS */
     /* ===================================== */
 
-    SUM(IFNULL(qty_smsubcont_to_prod,0))
+    SUM(IFNULL(qty_sm_send_prod,0))
         AS transfer_ncvs,
 
     (
-        SUM(IFNULL(qty_smsubcont_to_prod,0))
+        SUM(IFNULL(qty_sm_send_prod,0))
         -
         SUM(IFNULL(qty_plan,0))
     )
         AS balance_transfer_ncvs
 
-FROM tbl_transaksi
+FROM tbl_transactions
 
 $where_sql
 
@@ -386,19 +362,6 @@ while (
 
         "total_order" =>
         (int)$row['total_order'],
-
-        // SM CUTTING
-        "sm_cutting_in" =>
-        (int)$row['sm_cutting_in'],
-
-        "sm_cutting_balance" =>
-        (int)$row['sm_cutting_balance'],
-
-        "sm_cutting_out" =>
-        (int)$row['sm_cutting_out'],
-
-        "sm_cutting_out_balance" =>
-        (int)$row['sm_cutting_out_balance'],
 
         // SM SUBCONT
         "in_sm" =>

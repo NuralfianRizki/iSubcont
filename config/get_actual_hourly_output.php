@@ -46,7 +46,7 @@ SELECT
 
 FROM tbl_transaksi_event te
 
-INNER JOIN tbl_transaksi t
+INNER JOIN tbl_transactions t
 
 ON t.id_trans=te.id_trans
 
@@ -62,7 +62,7 @@ AND tm.status = 1
 
 WHERE
 
-te.gate='SM_SUBCONT_FROM_CUT'
+te.gate='IN_SM_SUBCONT'
 
 AND DATE(te.created_at)=CURDATE()
 
@@ -99,7 +99,7 @@ SELECT
 
 FROM tbl_transaksi_event te
 
-INNER JOIN tbl_transaksi t
+INNER JOIN tbl_transactions t
 
 ON t.id_trans=te.id_trans
 
@@ -115,7 +115,7 @@ AND tm.status = 1
 
 WHERE
 
-te.gate='WH_SUBCONT_FROM_SM_SUBCONT'
+te.gate='OUT_SM_SUBCONT'
 
 AND DATE(te.created_at)=CURDATE()
 

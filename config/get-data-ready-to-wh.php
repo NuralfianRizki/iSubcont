@@ -1,6 +1,8 @@
 
 <?php
+
 require 'function.php';
+
 /** @var mysqli $conn */
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -25,6 +27,7 @@ function executeReadyStmt(
     string $types = '',
     array $params = []
 ): mysqli_stmt {
+
     $stmt = mysqli_prepare($conn, $sql);
 
     if (!$stmt) {
@@ -52,6 +55,7 @@ function executeReadyStmt(
 }
 
 try {
+
     // =====================================================
     // 1. VALIDASI SESSION
     // =====================================================
@@ -122,7 +126,7 @@ try {
         }
 
         // ---------------------------------------------
-        // Base condition Ready to Ship
+        // BASE CONDITION READY TO SHIP
         // ---------------------------------------------
 
         $baseSql = "
@@ -146,15 +150,33 @@ try {
         }
 
         // ---------------------------------------------
+        // GROUPING DIMENSION
+        // Bucket + Model + Style + NCVS + Main Component
+        // ---------------------------------------------
+
+        $groupBy = "
+            bucket,
+            model,
+            style,
+            ncvs,
+            nm_komponen_in
+        ";
+
+        // ---------------------------------------------
         // TOTAL RECORDS
         // ---------------------------------------------
 
         $countSql = "
             SELECT COUNT(*) AS total
             FROM (
-                SELECT bucket, model, style, ncvs
+                SELECT
+                    bucket,
+                    model,
+                    style,
+                    ncvs,
+                    nm_komponen_in
                 $baseSql
-                GROUP BY bucket, model, style, ncvs
+                GROUP BY $groupBy
             ) AS ready_groups
         ";
 
@@ -179,12 +201,14 @@ try {
         $searchTypes = '';
 
         if ($keyword !== '') {
+
             $searchSql = "
                 AND (
                     bucket LIKE ?
                     OR model LIKE ?
                     OR style LIKE ?
                     OR ncvs LIKE ?
+                    OR nm_komponen_in LIKE ?
                 )
             ";
 
@@ -194,10 +218,11 @@ try {
                 $like,
                 $like,
                 $like,
+                $like,
                 $like
             ];
 
-            $searchTypes = 'ssss';
+            $searchTypes = 'sssss';
         }
 
         $filteredParams = array_merge(
@@ -214,10 +239,15 @@ try {
         $filteredSql = "
             SELECT COUNT(*) AS total
             FROM (
-                SELECT bucket, model, style, ncvs
+                SELECT
+                    bucket,
+                    model,
+                    style,
+                    ncvs,
+                    nm_komponen_in
                 $baseSql
                 $searchSql
-                GROUP BY bucket, model, style, ncvs
+                GROUP BY $groupBy
             ) AS ready_groups
         ";
 
@@ -246,19 +276,21 @@ try {
                 model,
                 style,
                 ncvs,
+                nm_komponen_in AS main_component,
                 COUNT(DISTINCT barcode) AS total_barcode
+
             $baseSql
             $searchSql
-            GROUP BY
-                bucket,
-                model,
-                style,
-                ncvs
+
+            GROUP BY $groupBy
+
             ORDER BY
-                bucket,
-                model,
-                style,
-                ncvs
+                bucket ASC,
+                model ASC,
+                style ASC,
+                ncvs ASC,
+                nm_komponen_in ASC
+
             LIMIT ? OFFSET ?
         ";
 
@@ -281,7 +313,9 @@ try {
         $rows = [];
 
         while ($row = mysqli_fetch_assoc($result)) {
+
             $row['total_barcode'] = (int) $row['total_barcode'];
+
             $rows[] = $row;
         }
 
@@ -295,7 +329,6 @@ try {
         ]);
     }
 
-
     // =====================================================
     // 4. ACTION DETAIL
     // =====================================================
@@ -307,20 +340,31 @@ try {
         $style  = trim((string) ($_POST['style'] ?? ''));
         $ncvs   = trim((string) ($_POST['ncvs'] ?? ''));
 
-        // Validasi parameter kelompok.
+        $mainComponent = trim(
+            (string) ($_POST['main_component'] ?? '')
+        );
+
+        // ---------------------------------------------
+        // VALIDASI PARAMETER KELOMPOK
+        // ---------------------------------------------
+
         if (
             $bucket === '' ||
             $model === '' ||
             $style === '' ||
-            $ncvs === ''
+            $ncvs === '' ||
+            $mainComponent === ''
         ) {
             respond([
                 'status' => 'error',
-                'message' => 'Parameter kelompok tidak lengkap.'
+                'message' => 'Parameter kelompok atau Main Component tidak lengkap.'
             ], 400);
         }
 
-        // Validasi akses NCVS.
+        // ---------------------------------------------
+        // VALIDASI AKSES NCVS
+        // ---------------------------------------------
+
         if ($userNcvs !== '' && $ncvs !== $userNcvs) {
             respond([
                 'status' => 'error',
@@ -333,76 +377,77 @@ try {
         // ---------------------------------------------
 
         $sql = "
-        SELECT
-            MIN(id_trans) AS id_trans,
-            barcode,
-            bucket,
-            model,
-            style,
-            ncvs,
+            SELECT
+                MIN(id_trans) AS id_trans,
+                barcode,
+                bucket,
+                model,
+                style,
+                ncvs,
+                MIN(CAST(lot AS UNSIGNED)) AS sort_lot,
 
-            GROUP_CONCAT(
-                DISTINCT nm_komponen_in
-                ORDER BY nm_komponen_in
-                SEPARATOR ', '
-            ) AS komponen,
+                GROUP_CONCAT(
+                    DISTINCT nm_komponen_in
+                    ORDER BY nm_komponen_in
+                    SEPARATOR ', '
+                ) AS komponen,
 
-            GROUP_CONCAT(
-                DISTINCT nm_vendor
-                ORDER BY nm_vendor
-                SEPARATOR ', '
-            ) AS nm_vendor,
+                GROUP_CONCAT(
+                    DISTINCT nm_vendor
+                    ORDER BY nm_vendor
+                    SEPARATOR ', '
+                ) AS nm_vendor,
 
-            GROUP_CONCAT(
-                DISTINCT CAST(lot AS UNSIGNED)
-                ORDER BY CAST(lot AS UNSIGNED)
-                SEPARATOR ','
-            ) AS lot_values,
+                GROUP_CONCAT(
+                    DISTINCT CAST(lot AS UNSIGNED)
+                    ORDER BY CAST(lot AS UNSIGNED)
+                    SEPARATOR ','
+                ) AS lot_values,
 
-            GROUP_CONCAT(
-                DISTINCT size
-                ORDER BY size
-                SEPARATOR ', '
-            ) AS size,
+                GROUP_CONCAT(
+                    DISTINCT size
+                    ORDER BY size
+                    SEPARATOR ', '
+                ) AS size,
 
-            SUM(qty_pre_setting) AS total_qty,
+                SUM(qty_pre_setting) AS total_qty,
 
-            MAX(print_status) AS print_status
+                MAX(print_status) AS print_status
 
-        FROM tbl_transactions
+            FROM tbl_transactions
 
-        WHERE last_gate = 'IN_SM_SUBCONT'
-          AND print_status = 'PRINTED'
+            WHERE last_gate = 'IN_SM_SUBCONT'
+              AND print_status = 'PRINTED'
 
-          AND (
-                global_barcode IS NULL
-                OR global_barcode = ''
-          )
+              AND (
+                    global_barcode IS NULL
+                    OR global_barcode = ''
+              )
 
-          AND bucket = ?
-          AND model = ?
-          AND style = ?
-          AND ncvs = ?
+              AND bucket = ?
+              AND model = ?
+              AND style = ?
+              AND ncvs = ?
+              AND nm_komponen_in = ?
 
-          AND barcode IS NOT NULL
-          AND barcode <> ''
+              AND barcode IS NOT NULL
+              AND barcode <> ''
 
-        GROUP BY
-            barcode,
-            bucket,
-            model,
-            style,
-            ncvs
+            GROUP BY
+                barcode,
+                bucket,
+                model,
+                style,
+                ncvs
 
-        ORDER BY
-    bucket ASC,
-    model ASC,
-    style ASC,
-    ncvs ASC,
-    komponen ASC,
-    CAST(lot AS UNSIGNED) ASC,
-    size ASC
-    ";
+            ORDER BY
+                bucket ASC,
+                model ASC,
+                style ASC,
+                ncvs ASC,
+                sort_lot ASC,
+                komponen ASC
+        ";
 
         $stmt = mysqli_prepare($conn, $sql);
 
@@ -414,11 +459,12 @@ try {
 
         mysqli_stmt_bind_param(
             $stmt,
-            'ssss',
+            'sssss',
             $bucket,
             $model,
             $style,
-            $ncvs
+            $ncvs,
+            $mainComponent
         );
 
         mysqli_stmt_execute($stmt);
@@ -433,7 +479,9 @@ try {
 
         while ($row = mysqli_fetch_assoc($result)) {
 
-            $lotValues = trim((string) ($row['lot_values'] ?? ''));
+            $lotValues = trim(
+                (string) ($row['lot_values'] ?? '')
+            );
 
             $lots = $lotValues === ''
                 ? []
@@ -475,6 +523,7 @@ try {
             $row['total_qty'] = (float) $row['total_qty'];
 
             unset($row['lot_values']);
+            unset($row['sort_lot']);
 
             $rows[] = $row;
         }
@@ -486,6 +535,10 @@ try {
             'data' => $rows
         ]);
     }
+
+    // =====================================================
+    // 5. ACTION TIDAK DIKENAL
+    // =====================================================
 
     respond([
         'status' => 'error',
