@@ -272,25 +272,29 @@ usort($officialSizes, function ($a, $b) {
     : strnatcasecmp($a, $b);
 });
 
-$userNcvs = '';
+$userNcvsList = [];
+
 if (!empty($_SESSION['nik_user'])) {
   $nikUser = $_SESSION['nik_user'];
 
   $stmtUser = mysqli_prepare(
     $conn,
-    "SELECT ncvs
-         FROM tbl_user
-         WHERE nik_user = ?
-         LIMIT 1"
+    "SELECT DISTINCT un.ncvs
+         FROM tbl_user u
+         INNER JOIN tbl_user_ncvs un
+            ON un.id_user = u.id_user
+         WHERE u.nik_user = ?
+         ORDER BY un.ncvs"
   );
 
   mysqli_stmt_bind_param($stmtUser, "s", $nikUser);
   mysqli_stmt_execute($stmtUser);
 
   $resultUser = mysqli_stmt_get_result($stmtUser);
-  $userData = mysqli_fetch_assoc($resultUser);
 
-  $userNcvs = $userData['ncvs'] ?? '';
+  while ($userData = mysqli_fetch_assoc($resultUser)) {
+    $userNcvsList[] = (string) $userData['ncvs'];
+  }
 
   mysqli_stmt_close($stmtUser);
 }
@@ -1749,7 +1753,7 @@ if (!empty($_SESSION['nik_user'])) {
 
   <script>
     // NCVS USER LOGIN
-    const USER_NCVS = <?= json_encode((string)$userNcvs) ?>;
+    const USER_NCVS_LIST = <?= json_encode($userNcvsList, JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 
     // GLOBAL DATA
     const komponenEl = document.getElementById('komponen-data');
@@ -1910,13 +1914,16 @@ if (!empty($_SESSION['nik_user'])) {
         `Mode: ${getSelectionMode()}`
       );
 
-      const userNcvs = String(USER_NCVS).trim();
+      const userNcvs = USER_NCVS_LIST.map(ncvs =>
+        String(ncvs).trim()
+      ).filter(Boolean);
+
       const selectedNcvs = [...ncvss];
 
       const isMatch =
-        userNcvs !== '' &&
-        selectedNcvs.length === 1 &&
-        selectedNcvs[0] === userNcvs;
+        userNcvs.length > 0 &&
+        selectedNcvs.length > 0 &&
+        selectedNcvs.every(ncvs => userNcvs.includes(ncvs));
 
       let statusHtml = '';
 
@@ -1929,7 +1936,7 @@ if (!empty($_SESSION['nik_user'])) {
                 </span>
 
                 <small>
-                    NCVS User: <strong>${escapeHtml(userNcvs)}</strong>
+                    NCVS User: <strong>${escapeHtml(userNcvs.join(', ') || '-')}</strong>
                     | NCVS Data: <strong>${escapeHtml(selectedNcvs[0])}</strong>
                 </small>
             </div>
@@ -1944,7 +1951,7 @@ if (!empty($_SESSION['nik_user'])) {
                     </span>
 
                     <small>
-                        NCVS User: <strong>${escapeHtml(userNcvs)}</strong>
+                        NCVS User: <strong>${escapeHtml(userNcvs.join(', ') || '-')}</strong>
                         | NCVS Data:
                         <strong>${selectedNcvs.map(escapeHtml).join(', ')}</strong>
                     </small>
@@ -2395,6 +2402,60 @@ if (!empty($_SESSION['nik_user'])) {
     let tappingStage = 'USER';
     let tappingValidationInProgress = false;
 
+    function updateTappingStage(stage) {
+      tappingStage = stage;
+
+      const $label = $('#modalTappingSetting label[for="tapping-user-id"]');
+      const $input = $('#tapping-user-id');
+
+      const stageConfig = {
+        USER: {
+          label: 'Tapping ID Team Member',
+          placeholder: 'Tap atau input ID Team Member'
+        },
+        LEADER_DATA: {
+          label: 'Tapping ID Team Leader - NCVS Transaksi',
+          placeholder: 'Tap atau input ID Team Leader'
+        },
+        LEADER_MEMBER: {
+          label: 'Tapping ID Team Leader - NCVS Team Member',
+          placeholder: 'Tap atau input ID Team Leader'
+        }
+      };
+
+      if (stage === 'DONE') {
+        $label.html(
+          '<i class="bi bi-check-circle-fill me-2"></i>' +
+          'Validasi Tapping Selesai'
+        );
+
+        $input
+          .val('')
+          .prop('disabled', true)
+          .attr('placeholder', 'Seluruh tahap tapping berhasil');
+
+        return;
+      }
+
+      const config = stageConfig[stage];
+
+      if (!config) {
+        console.error('Tapping stage tidak dikenali:', stage);
+        return;
+      }
+
+      $label.html(
+        '<i class="bi bi-person-badge-fill me-2"></i>' +
+        config.label
+      );
+
+      $input
+        .val('')
+        .prop('disabled', false)
+        .attr('placeholder', config.placeholder)
+        .trigger('focus');
+    }
+
     function showTappingSettingModal(mode) {
       tappingMode = mode === 'CUSTOM' ? 'CUSTOM' : 'PLAN';
       tappingStage = 'USER';
@@ -2451,15 +2512,13 @@ if (!empty($_SESSION['nik_user'])) {
 
       $('#t-komponen-summary').html(html);
 
-      // Reset ke tahap Tapping ID User.
-      $('#tapping-user-id')
-        .val('')
-        .attr('placeholder', 'Tap atau input ID User');
+      // Reset ke tahap awal tapping.
+      updateTappingStage('USER');
 
-      $('#modalTappingSetting label[for="tapping-user-id"]').html(
-        '<i class="bi bi-person-badge me-2"></i>' +
-        'Tapping ID User'
-      );
+      $('#tapping-validation-message')
+        .addClass('d-none')
+        .removeClass('alert-success alert-danger alert-info')
+        .text('');
 
       // Tutup modal pertama, lalu buka modal tapping.
       const firstModalEl = document.getElementById('modalKonfirmasi');
@@ -2613,13 +2672,12 @@ if (!empty($_SESSION['nik_user'])) {
             return;
           }
 
-          // Simpan berhasil.
-          if (r.status === 'done' && Number(r.success) > 0) {
+          // Payload berhasil divalidasi dan disimpan sementara di session.
+          if (r.status === 'pending' && Number(r.success) > 0) {
             showSuccess(
-              `Konfirmasi transaksi berhasil disimpan (${r.success} data). Lanjutkan tapping ID User.`
+              `Data berhasil divalidasi (${r.success} kandidat transaksi). Lanjutkan tapping Team Member.`
             );
 
-            // Beri waktu agar toast sempat terlihat sebelum modal dibuka.
             setTimeout(function() {
               showTappingSettingModal(payload.mode);
             }, 400);
@@ -2632,19 +2690,12 @@ if (!empty($_SESSION['nik_user'])) {
         },
 
         error: function(xhr, status, error) {
-
-          console.error('Tapping validation error:', error);
+          console.error('Create barcode error:', error);
           console.error('Server response:', xhr.responseText);
 
-          $message
-            .removeClass('d-none alert-success alert-info')
-            .addClass('alert-danger')
-            .text(
-              'Gagal menghubungi server. ' +
-              'Silakan tap ulang kartu.'
-            );
-
-          $input.val('');
+          showError(
+            'Gagal menghubungi server. Silakan coba kembali.'
+          );
         },
 
       });
@@ -2690,7 +2741,7 @@ if (!empty($_SESSION['nik_user'])) {
         $input.prop('disabled', true);
 
         $message
-          .removeClass('d-none alert-success')
+          .removeClass('d-none alert-success alert-danger')
           .addClass('alert-info')
           .text('Memvalidasi ID Card...');
 
@@ -2705,227 +2756,216 @@ if (!empty($_SESSION['nik_user'])) {
             stage: tappingStage
           },
 
-          success: async function(res) {
+          success: function(res) {
             if (res.status !== 'success') {
-
               $message
                 .removeClass('d-none alert-success alert-info')
                 .addClass('alert-danger')
                 .text(res.message || 'Validasi tapping gagal.');
 
-              $input.val('');
-              return;
-            }
-
-            if (res.next_stage === 'LEADER') {
-              tappingStage = 'LEADER';
-
-              $('#modalTappingSetting label[for="tapping-user-id"]')
-                .html(
-                  '<i class="bi bi-person-badge-fill me-2"></i>' +
-                  'Tapping ID Team Leader'
-                );
-
-              $message
-                .removeClass('d-none alert-danger alert-info')
-                .addClass('alert-success')
-                .text(
-                  'Team Member berhasil divalidasi. ' +
-                  'Silakan tap kartu Team Leader.'
-                );
-
               $input
                 .val('')
-                .attr(
-                  'placeholder',
-                  'Tap ID Card Team Leader'
-                );
+                .prop('disabled', false)
+                .trigger('focus');
 
               return;
             }
 
-            // ===================================
-            // VALIDASI TAPPING TERAKHIR BERHASIL
-            // ===================================
+            const nextStage = res.next_stage;
 
-            tappingStage = 'DONE';
-
+            // Tampilkan pesan dari backend untuk semua kondisi.
             $message
               .removeClass('d-none alert-danger alert-info')
               .addClass('alert-success')
-              .text('Validasi berhasil. Membuka koneksi Bluetooth...');
+              .text(res.message);
 
-            $input.val('').prop('disabled', true);
+            // =========================================
+            // SEMUA TAHAP TAPPING SUDAH SELESAI
+            // =========================================
 
-            // Pastikan browser mendukung Web Bluetooth.
-            if (!navigator.bluetooth) {
-              $message
-                .removeClass('alert-success')
-                .addClass('alert-danger')
-                .text('Browser tidak mendukung Web Bluetooth. Gunakan Chrome atau Edge melalui HTTPS/localhost.');
+            if (nextStage === 'DONE') {
+              updateTappingStage('DONE');
 
-              return;
-            }
+              console.log('Tapping validation completed:', res);
 
-            try {
-              // Popup Bluetooth baru dipanggil setelah validasi NCVS berhasil.
-              const device = await navigator.bluetooth.requestDevice({
-                acceptAllDevices: true,
-                optionalServices: [
-                  PRINTER_SERVICE_UUID,
-                  '00001800-0000-1000-8000-00805f9b34fb',
-                  '00001801-0000-1000-8000-00805f9b34fb'
-                ]
-              });
-
+              // =========================================
+              // FINALISASI TRANSAKSI
+              // =========================================
               $message
                 .removeClass('alert-success alert-danger')
                 .addClass('alert-info')
-                .text('Mengambil data label, dan mencetak barcode. Tunggu sampai proses selesai...');
+                .text('Tapping selesai. Menyimpan transaksi ke database...');
 
-              // Ambil label setelah user memilih printer.
               $.ajax({
                 url: './../config/function.php',
                 method: 'POST',
                 dataType: 'json',
                 data: {
-                  action: 'get-print-labels'
+                  action: 'finalize-create-barcode'
                 },
 
-                success: async function(printRes) {
+                success: async function(finalizeRes) {
+                  if (finalizeRes.status !== 'done') {
+                    $message
+                      .removeClass('alert-info alert-success')
+                      .addClass('alert-danger')
+                      .text(finalizeRes.message || 'Finalisasi transaksi gagal.');
+
+                    showError(
+                      finalizeRes.message || 'Gagal menyimpan transaksi.'
+                    );
+
+                    console.error('Finalization failed:', finalizeRes);
+                    return;
+                  }
+
+                  console.log('Finalization completed:', finalizeRes);
+
+                  $message
+                    .removeClass('alert-info alert-danger')
+                    .addClass('alert-success')
+                    .text(
+                      `Transaksi berhasil disimpan (${finalizeRes.success} data). Menyiapkan label...`
+                    );
+
+                  showSuccess('Transaksi berhasil disimpan ke database.');
+
+
                   try {
-                    if (printRes.status !== 'success') {
+                    // =========================================
+                    // 1. BUKA DIALOG BLUETOOTH CHROME
+                    // =========================================
+                    const device = await navigator.bluetooth.requestDevice({
+                      acceptAllDevices: true,
+                      optionalServices: [
+                        PRINTER_SERVICE_UUID,
+                        '00001800-0000-1000-8000-00805f9b34fb',
+                        '00001801-0000-1000-8000-00805f9b34fb'
+                      ]
+                    });
+
+                    $message
+                      .removeClass('alert-success alert-danger')
+                      .addClass('alert-info')
+                      .text('Printer dipilih. Mengambil data label...');
+
+                    // =========================================
+                    // 2. AMBIL DATA LABEL
+                    // =========================================
+                    const labelResponse = await $.ajax({
+                      url: './../config/function.php',
+                      method: 'POST',
+                      dataType: 'json',
+                      data: {
+                        action: 'get-print-labels'
+                      }
+                    });
+
+                    if (
+                      labelResponse.status !== 'success' ||
+                      !Array.isArray(labelResponse.labels) ||
+                      labelResponse.labels.length === 0
+                    ) {
                       throw new Error(
-                        printRes.message || 'Gagal mengambil data label.'
+                        labelResponse.message || 'Data label tidak ditemukan.'
                       );
                     }
 
-                    const labels = printRes.labels || [];
+                    const labels = labelResponse.labels;
 
-                    if (labels.length === 0) {
-                      throw new Error('Tidak ada label yang siap dicetak.');
-                    }
+                    console.log('Print labels:', labels);
 
-                    pendingPrintBarcodes = [
-                        ...new Map(
-                          labels.map(x => [String(x.barcode || ''), x])
-                        ).values()
-                      ]
-                      .map(x => String(x.barcode || ''))
-                      .filter(Boolean);
+                    // =========================================
+                    // 3. HUBUNGKAN PRINTER
+                    // =========================================
+                    $message
+                      .removeClass('alert-success alert-danger')
+                      .addClass('alert-info')
+                      .text('Menghubungkan printer Bluetooth...');
 
-                    // Hubungkan printer.
                     await connectBluetoothPrinter(device);
 
-                    console.log(
-                      'Printer siap. Mulai mencetak',
-                      labels.length,
-                      'label.'
-                    );
+                    // =========================================
+                    // 4. CETAK OTOMATIS
+                    // =========================================
+                    $message
+                      .removeClass('alert-success alert-danger')
+                      .addClass('alert-info')
+                      .text('Printer terhubung. Mencetak barcode...');
 
-                    // Cetak label.
                     await printSessionLabels(labels);
 
                     $message
                       .removeClass('alert-danger alert-info')
                       .addClass('alert-success')
-                      .text(
-                        'Data label berhasil dikirim ke printer. ' +
-                        'Konfirmasi hasil cetak pada dialog berikutnya.'
-                      );
+                      .text('Data label berhasil dikirim ke printer.');
 
-                  } catch (error) {
-                    console.error('Bluetooth connection error:', error);
+                  } catch (printError) {
+                    console.error('Bluetooth / printing error:', printError);
+
+                    // Jika proses cetak belum dimulai,
+                    // ambil barcode agar tetap bisa dikonfirmasi sebagai FAILED.
+                    if (pendingPrintBarcodes.length === 0) {
+                      try {
+                        const labelResponse = await $.ajax({
+                          url: './../config/function.php',
+                          method: 'POST',
+                          dataType: 'json',
+                          data: {
+                            action: 'get-print-labels'
+                          }
+                        });
+
+                        if (labelResponse.status === 'success') {
+                          pendingPrintBarcodes = [
+                            ...new Set(
+                              (labelResponse.labels || [])
+                              .map(x => String(x.barcode || '').trim())
+                              .filter(Boolean)
+                            )
+                          ];
+                        }
+                      } catch (loadError) {
+                        console.error('Gagal mengambil barcode:', loadError);
+                      }
+
+                      // printSessionLabels sudah menangani error-nya sendiri.
+                      // Jadi callback ini hanya untuk error sebelum proses cetak.
+                      window.onBluetoothPrintFailed(
+                        printError.message || String(printError)
+                      );
+                    }
 
                     $message
                       .removeClass('alert-success alert-info')
                       .addClass('alert-danger')
-                      .text(
-                        'Pengiriman label gagal: ' +
-                        (error.message || String(error))
-                      );
-
-                    window.onBluetoothPrintFailed(
-                      error.message || String(error)
-                    );
+                      .text('Proses Bluetooth / cetak gagal: ' + printError.message);
                   }
+
                 },
 
                 error: function(xhr, status, error) {
-                  console.error('Get print labels HTTP status:', xhr.status);
-                  console.error('AJAX status:', status);
-                  console.error('Error:', error);
-                  console.error('Response server:', xhr.responseText);
-
-                  let message = 'Gagal mengambil data label.';
-
-                  if (xhr.responseJSON && xhr.responseJSON.message) {
-                    message += ' ' + xhr.responseJSON.message;
-                  }
+                  console.error('Finalize AJAX error:', error);
+                  console.error('Server response:', xhr.responseText);
 
                   $message
-                    .removeClass('alert-success alert-info')
+                    .removeClass('alert-info alert-success')
                     .addClass('alert-danger')
-                    .text(message);
+                    .text('Gagal menghubungi server untuk finalisasi transaksi.');
+
+                  showError('Gagal melakukan finalisasi transaksi.');
                 }
               });
 
-            } catch (error) {
-              console.error('Bluetooth connection error:', error);
-
-              // Ambil barcode untuk konfirmasi hasil cetak.
-              try {
-                const printRes = await $.ajax({
-                  url: './../config/function.php',
-                  method: 'POST',
-                  dataType: 'json',
-                  data: {
-                    action: 'get-print-labels'
-                  }
-                });
-
-                console.log('Response get-print-labels:', printRes);
-
-                if (printRes.status !== 'success') {
-                  throw new Error(
-                    printRes.message || 'Gagal mengambil data barcode.'
-                  );
-                }
-
-                const labels = printRes.labels || [];
-
-                pendingPrintBarcodes = [
-                  ...new Set(
-                    labels
-                    .map(x => String(x.barcode || '').trim())
-                    .filter(Boolean)
-                  )
-                ];
-
-                console.log('Barcode menunggu konfirmasi:', pendingPrintBarcodes);
-
-                if (pendingPrintBarcodes.length === 0) {
-                  throw new Error('Tidak ada barcode yang dikembalikan backend.');
-                }
-
-              } catch (loadError) {
-                console.error('Gagal mengambil barcode:', loadError);
-                showError('Barcode gagal dimuat: ' + loadError.message);
-                return;
-              }
-
-              $message
-                .removeClass('alert-success alert-info')
-                .addClass('alert-danger')
-                .text(
-                  'Koneksi Bluetooth dibatalkan atau gagal: ' +
-                  (error.message || String(error))
-                );
-
-              window.onBluetoothPrintFailed(
-                error.message || String(error)
-              );
+              return;
             }
+
+            // =========================================
+            // PINDAH KE TAHAP TAPPING BERIKUTNYA
+            // =========================================
+            updateTappingStage(nextStage);
+
+            console.log('Tapping next stage:', nextStage);
           },
 
           error: function(xhr, status, error) {
@@ -2936,18 +2976,20 @@ if (!empty($_SESSION['nik_user'])) {
               .removeClass('d-none alert-success alert-info')
               .addClass('alert-danger')
               .text(
-                'Gagal menghubungi server. ' +
-                'Silakan tap ulang kartu.'
+                'Gagal menghubungi server. Silakan tap ulang kartu.'
               );
 
-            $input.val('');
+            $input
+              .val('')
+              .prop('disabled', false)
+              .trigger('focus');
           },
 
           complete: function() {
             tappingValidationInProgress = false;
 
             if (tappingStage !== 'DONE') {
-              $input.prop('disabled', false).trigger('focus');
+              $input.prop('disabled', false);
             }
           }
         });

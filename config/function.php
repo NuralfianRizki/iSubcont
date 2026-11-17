@@ -1,5 +1,16 @@
 <?php
 session_start(); // ready to go!
+// TEMPORARY: Reset pending tapping session
+// if (
+//     isset($_GET['reset_tapping_session']) &&
+//     $_GET['reset_tapping_session'] === '1'
+// ) {
+//     unset($_SESSION['pending_barcode_payload']);
+//     unset($_SESSION['tapping_validation_context']);
+
+//     echo 'Pending tapping session berhasil di-reset.';
+//     exit;
+// }
 
 //Koneksi ke DBMS
 $conn = mysqli_connect("localhost", "root", "", "db_isubcont");
@@ -2748,9 +2759,1052 @@ if (isset($_POST['update-time'])) {
     }
 }
 
+
 if (
     isset($_POST['action']) &&
     $_POST['action'] === 'create-barcode'
+) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    try {
+        // =====================================================
+        // 1. CEK SESI TRANSAKSI YANG MASIH BERJALAN
+        // =====================================================
+        if (
+            isset($_SESSION['pending_barcode_payload']) &&
+            isset($_SESSION['tapping_validation_context']) &&
+            ($_SESSION['tapping_validation_context']['stage'] ?? '') !== 'DONE'
+        ) {
+            throw new RuntimeException(
+                'Masih ada proses tapping yang belum selesai. ' .
+                    'Selesaikan proses sebelumnya terlebih dahulu.'
+            );
+        }
+
+        // =====================================================
+        // 2. VALIDASI PAYLOAD
+        // =====================================================
+        $data = json_decode($_POST['data'] ?? '', true);
+
+        if (!is_array($data)) {
+            throw new RuntimeException('Payload JSON tidak valid.');
+        }
+
+        $global = $data['global'] ?? [];
+        $detail = $data['detail'] ?? [];
+        $planDetail = $data['plan_detail'] ?? [];
+        $komponen = $data['komponen'] ?? [];
+        $mode = strtoupper(trim((string)($data['mode'] ?? '')));
+
+        if (!in_array($mode, ['PLAN', 'CUSTOM'], true)) {
+            throw new RuntimeException('Mode transaksi tidak valid.');
+        }
+
+        $bucket = trim((string)($global['bucket'] ?? ''));
+        $model = trim((string)($global['model'] ?? ''));
+        $style = trim((string)($global['style'] ?? ''));
+        $ncvs = trim((string)($global['ncvs'] ?? ''));
+        $statusLot = trim((string)($global['lot_code'] ?? ''));
+
+        $transacBy = trim((string)($_SESSION['username'] ?? ''));
+
+        if (
+            $bucket === '' ||
+            $model === '' ||
+            $style === '' ||
+            $ncvs === '' ||
+            $statusLot === '' ||
+            $transacBy === ''
+        ) {
+            throw new RuntimeException(
+                'Data global atau identitas user belum lengkap.'
+            );
+        }
+
+        if (!is_array($detail) || empty($detail)) {
+            throw new RuntimeException(
+                'Belum ada LOT-SIZE yang dipilih.'
+            );
+        }
+
+        if (!is_array($komponen) || empty($komponen)) {
+            throw new RuntimeException(
+                'Belum ada komponen utama yang dipilih.'
+            );
+        }
+
+        if (!is_array($planDetail) || empty($planDetail)) {
+            throw new RuntimeException(
+                'PLAN QTY tidak ditemukan. Periksa payload plan_detail.'
+            );
+        }
+
+        // =====================================================
+        // 3. VALIDASI KOMPONEN UTAMA
+        // =====================================================
+        $selectedComponents = [];
+        $seenComponents = [];
+
+        foreach ($komponen as $group) {
+            if (!is_array($group)) {
+                throw new RuntimeException(
+                    'Format data komponen tidak valid.'
+                );
+            }
+
+            $idGroup = trim((string)($group['id_group'] ?? ''));
+            $idMain = trim((string)($group['id_main_input'] ?? ''));
+            $nmMain = trim((string)($group['nm_main_input'] ?? ''));
+            $idOutput = trim((string)($group['id_output'] ?? ''));
+            $nmOutput = trim((string)($group['nm_output'] ?? ''));
+
+            if (
+                $idGroup === '' ||
+                $idMain === '' ||
+                $nmMain === '' ||
+                $idOutput === '' ||
+                $nmOutput === ''
+            ) {
+                throw new RuntimeException(
+                    'Data komponen utama tidak lengkap.'
+                );
+            }
+
+            if (isset($seenComponents[$idMain])) {
+                throw new RuntimeException(
+                    'Komponen utama yang sama dipilih lebih dari sekali: ' .
+                        $nmMain
+                );
+            }
+
+            $seenComponents[$idMain] = true;
+
+            $selectedComponents[] = [
+                'id_group' => $idGroup,
+                'id_main' => $idMain,
+                'nm_main' => $nmMain,
+                'id_output' => $idOutput,
+                'nm_output' => $nmOutput,
+                'id_vendor' => trim(
+                    (string)($group['id_vendor'] ?? '')
+                ),
+                'nm_vendor' => trim(
+                    (string)($group['nm_vendor'] ?? '')
+                )
+            ];
+        }
+
+
+        // =====================================================
+        // 4. BENTUK KANDIDAT: JO -> LOT -> SIZE -> KOMPONEN
+        // =====================================================
+        $candidates = [];
+        $candidateCount = 0;
+
+        foreach ($detail as $jobOrder => $lots) {
+            $jobOrder = trim((string)$jobOrder);
+
+            if (
+                $jobOrder === '' ||
+                !is_array($lots) ||
+                empty($lots)
+            ) {
+                throw new RuntimeException(
+                    'Struktur Job Order / LOT tidak valid.'
+                );
+            }
+
+            foreach ($lots as $lot => $sizes) {
+                $lot = trim((string)$lot);
+
+                if (
+                    $lot === '' ||
+                    !is_array($sizes) ||
+                    empty($sizes)
+                ) {
+                    throw new RuntimeException(
+                        "Data LOT tidak valid pada Job Order {$jobOrder}."
+                    );
+                }
+
+                foreach ($sizes as $size => $qtyValue) {
+                    $size = trim((string)$size);
+
+                    $qty = filter_var(
+                        $qtyValue,
+                        FILTER_VALIDATE_INT
+                    );
+
+                    $planValue =
+                        $planDetail[$jobOrder][$lot][$size] ?? null;
+
+                    $qtyPlan = filter_var(
+                        $planValue,
+                        FILTER_VALIDATE_INT
+                    );
+
+                    if (
+                        $size === '' ||
+                        $qty === false ||
+                        $qty < 1 ||
+                        $qtyPlan === false ||
+                        $qtyPlan < 1 ||
+                        $qty > $qtyPlan
+                    ) {
+                        throw new RuntimeException(
+                            "Qty tidak valid: JO {$jobOrder}, " .
+                                "LOT {$lot}, SIZE {$size}."
+                        );
+                    }
+
+                    foreach ($selectedComponents as $component) {
+                        $candidates[] = [
+                            'job_order' => $jobOrder,
+                            'lot' => $lot,
+                            'size' => $size,
+                            'qty_plan' => (string)$qtyPlan,
+                            'qty_pre_setting' => (string)$qty,
+                            'component' => $component
+                        ];
+
+                        $candidateCount++;
+                    }
+                }
+            }
+        }
+
+        if ($candidateCount < 1) {
+            throw new RuntimeException(
+                'Tidak ada transaksi yang dapat diproses.'
+            );
+        }
+
+        // =====================================================
+        // 5. CEK SELURUH DUPLIKAT SEBELUM MENYIMPAN SESSION
+        // Key: NCVS + JO + LOT + SIZE + KOMPONEN UTAMA
+        // =====================================================
+        $duplicateStmt = mysqli_prepare(
+            $conn,
+            "SELECT id_trans
+     FROM tbl_transactions
+     WHERE ncvs = ?
+       AND job_order = ?
+       AND lot = ?
+       AND size = ?
+       AND id_komponen_in = ?
+       AND is_main_komponen = 1
+     LIMIT 1"
+        );
+
+        $duplicates = [];
+
+        foreach ($candidates as $candidate) {
+            $jobOrder = $candidate['job_order'];
+            $lot = $candidate['lot'];
+            $size = $candidate['size'];
+            $component = $candidate['component'];
+            $idMain = $component['id_main'];
+
+            mysqli_stmt_bind_param(
+                $duplicateStmt,
+                'sssss',
+                $ncvs,
+                $jobOrder,
+                $lot,
+                $size,
+                $idMain
+            );
+
+            mysqli_stmt_execute($duplicateStmt);
+            mysqli_stmt_store_result($duplicateStmt);
+
+            if (mysqli_stmt_num_rows($duplicateStmt) > 0) {
+                $duplicates[] = [
+                    'job_order' => $jobOrder,
+                    'lot' => $lot,
+                    'size' => $size,
+                    'komponen' => $component['nm_main'],
+                    'reason' => 'Kombinasi transaksi sudah pernah disimpan.'
+                ];
+            }
+
+            mysqli_stmt_free_result($duplicateStmt);
+        }
+
+        mysqli_stmt_close($duplicateStmt);
+
+        if (!empty($duplicates)) {
+            throw new RuntimeException(
+                'DUPLIKAT:' . json_encode(
+                    $duplicates,
+                    JSON_UNESCAPED_UNICODE
+                )
+            );
+        }
+
+        // =====================================================
+        // 6. SIMPAN PAYLOAD UNTUK PROSES FINALISASI
+        // =====================================================
+        // Payload baru disimpan jika seluruh kandidat lolos
+        // validasi dan tidak ditemukan transaksi duplikat.
+
+        $_SESSION['pending_barcode_payload'] = $data;
+
+        $_SESSION['tapping_validation_context'] = [
+            'mode' => $mode,
+            'ncvs' => $ncvs,
+            'stage' => 'USER',
+            'candidate_count' => $candidateCount,
+            'barcodes' => [],
+            'validated' => [
+                'user' => null,
+                'leader' => null,
+                'leader2' => null
+            ],
+            'finalized' => false
+        ];
+
+        echo json_encode([
+            'status' => 'pending',
+            'success' => $candidateCount,
+            'mode' => $mode,
+            'next_stage' => 'USER',
+            'message' =>
+            'Data berhasil divalidasi. Silakan lanjutkan tapping Team Member.'
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        $message = $e->getMessage();
+        $duplicates = [];
+
+        if (strpos($message, 'DUPLIKAT:') === 0) {
+            $duplicates = json_decode(
+                substr($message, strlen('DUPLIKAT:')),
+                true
+            ) ?? [];
+
+            $message =
+                'Konfirmasi transaksi ditolak karena ditemukan ' .
+                'data transaksi duplikat. Silakan periksa kembali ' .
+                'data yang dipilih.';
+        }
+
+        error_log('create-barcode error: ' . $e->getMessage());
+
+        http_response_code(200);
+
+        echo json_encode([
+            'status' => 'error',
+            'message' => $message,
+            'duplicates' => $duplicates
+        ], JSON_UNESCAPED_UNICODE);
+    }
+
+    exit;
+}
+
+if (
+    isset($_POST['action']) &&
+    $_POST['action'] === 'validate-tapping'
+) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+
+    try {
+
+        // =====================================================
+        // 1. AMBIL DAN VALIDASI CONTEXT TAPPING
+        // =====================================================
+
+        $context = $_SESSION['tapping_validation_context'] ?? null;
+
+        if (!is_array($context)) {
+            throw new RuntimeException(
+                'Sesi transaksi tidak ditemukan. Silakan ulangi Create Barcode.'
+            );
+        }
+
+        $mode = strtoupper(trim((string)($_POST['mode'] ?? '')));
+        $stage = strtoupper(trim((string)($_POST['stage'] ?? '')));
+        $idCard = trim((string)($_POST['id_card'] ?? ''));
+
+        $contextMode = strtoupper(
+            trim((string)($context['mode'] ?? ''))
+        );
+
+        $contextStage = strtoupper(
+            trim((string)($context['stage'] ?? ''))
+        );
+
+        $ncvs = trim((string)($context['ncvs'] ?? ''));
+
+        // Validasi mode transaksi.
+        if (!in_array($contextMode, ['PLAN', 'CUSTOM'], true)) {
+            throw new RuntimeException(
+                'Mode transaksi pada sesi tidak valid.'
+            );
+        }
+
+        if ($mode !== $contextMode) {
+            throw new RuntimeException(
+                'Mode tapping tidak sesuai dengan transaksi.'
+            );
+        }
+
+        // Validasi urutan stage.
+        if ($stage !== $contextStage) {
+            throw new RuntimeException(
+                'Tahap tapping tidak sesuai urutan.'
+            );
+        }
+
+        if (!in_array(
+            $stage,
+            ['USER', 'LEADER_DATA', 'LEADER_MEMBER'],
+            true
+        )) {
+            throw new RuntimeException(
+                'Tahap tapping tidak valid atau sudah selesai.'
+            );
+        }
+
+        if ($ncvs === '') {
+            throw new RuntimeException(
+                'NCVS transaksi tidak ditemukan pada sesi.'
+            );
+        }
+
+        if ($idCard === '') {
+            throw new RuntimeException(
+                'ID Card tidak boleh kosong.'
+            );
+        }
+
+        // =====================================================
+        // 2. VALIDASI PAYLOAD TRANSAKSI
+        // =====================================================
+
+        if (
+            !isset($_SESSION['pending_barcode_payload']) ||
+            !is_array($_SESSION['pending_barcode_payload'])
+        ) {
+            throw new RuntimeException(
+                'Payload transaksi tidak ditemukan. Silakan ulangi Create Barcode.'
+            );
+        }
+
+        // =====================================================
+        // 3. HELPER CEK MAPPING NCVS
+        // =====================================================
+
+        $hasNcvsMapping = static function (
+            array $mappingList,
+            string $targetNcvs
+        ): bool {
+
+            foreach ($mappingList as $mappedNcvs) {
+
+                if (
+                    strcasecmp(
+                        trim((string)$mappedNcvs),
+                        trim($targetNcvs)
+                    ) === 0
+                ) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        // =====================================================
+        // 4. AMBIL DATA AKUN LOGIN
+        // =====================================================
+
+        $loginNik = trim(
+            (string)($_SESSION['nik_user'] ?? '')
+        );
+
+        if ($loginNik === '') {
+            throw new RuntimeException(
+                'Sesi login tidak ditemukan. Silakan login kembali.'
+            );
+        }
+
+        // Cari id_user berdasarkan NIK akun login.
+        $loginStmt = mysqli_prepare(
+            $conn,
+            "SELECT id_user
+             FROM tbl_user
+             WHERE nik_user = ?
+               AND is_deleted = 0
+             LIMIT 1"
+        );
+
+        if (!$loginStmt) {
+            throw new RuntimeException(
+                'Gagal mempersiapkan validasi akun login.'
+            );
+        }
+
+        mysqli_stmt_bind_param(
+            $loginStmt,
+            's',
+            $loginNik
+        );
+
+        if (!mysqli_stmt_execute($loginStmt)) {
+            mysqli_stmt_close($loginStmt);
+
+            throw new RuntimeException(
+                'Gagal mengambil data akun login.'
+            );
+        }
+
+        $loginResult = mysqli_stmt_get_result($loginStmt);
+        $loginUser = mysqli_fetch_assoc($loginResult);
+
+        mysqli_stmt_close($loginStmt);
+
+        if (!$loginUser) {
+            throw new RuntimeException(
+                'Data akun login tidak ditemukan atau sudah tidak aktif.'
+            );
+        }
+
+        $loginIdUser = (int)$loginUser['id_user'];
+
+        // =====================================================
+        // 5. AMBIL SELURUH MAPPING NCVS AKUN LOGIN
+        // =====================================================
+
+        $loginMappingStmt = mysqli_prepare(
+            $conn,
+            "SELECT DISTINCT ncvs
+             FROM tbl_user_ncvs
+             WHERE id_user = ?
+             ORDER BY ncvs"
+        );
+
+        if (!$loginMappingStmt) {
+            throw new RuntimeException(
+                'Gagal mempersiapkan pengambilan mapping NCVS akun login.'
+            );
+        }
+
+        mysqli_stmt_bind_param(
+            $loginMappingStmt,
+            'i',
+            $loginIdUser
+        );
+
+        if (!mysqli_stmt_execute($loginMappingStmt)) {
+            mysqli_stmt_close($loginMappingStmt);
+
+            throw new RuntimeException(
+                'Gagal mengambil mapping NCVS akun login.'
+            );
+        }
+
+        $loginMappingResult = mysqli_stmt_get_result(
+            $loginMappingStmt
+        );
+
+        $loginNcvsList = [];
+
+        while ($row = mysqli_fetch_assoc($loginMappingResult)) {
+
+            $mappedNcvs = trim((string)$row['ncvs']);
+
+            if ($mappedNcvs !== '') {
+                $loginNcvsList[] = $mappedNcvs;
+            }
+        }
+
+        mysqli_stmt_close($loginMappingStmt);
+
+        if (empty($loginNcvsList)) {
+            throw new RuntimeException(
+                'Akun login belum memiliki mapping NCVS.'
+            );
+        }
+
+        // =====================================================
+        // 7. CARI USER BERDASARKAN ID CARD
+        // =====================================================
+
+        $stmt = mysqli_prepare(
+            $conn,
+            "SELECT id_user, username, level
+             FROM tbl_user
+             WHERE id_card = ?
+               AND is_deleted = 0
+             LIMIT 2"
+        );
+
+        if (!$stmt) {
+            throw new RuntimeException(
+                'Gagal mempersiapkan pencarian user berdasarkan ID Card.'
+            );
+        }
+
+        mysqli_stmt_bind_param(
+            $stmt,
+            's',
+            $idCard
+        );
+
+        if (!mysqli_stmt_execute($stmt)) {
+            mysqli_stmt_close($stmt);
+
+            throw new RuntimeException(
+                'Gagal mengambil data user berdasarkan ID Card.'
+            );
+        }
+
+        $result = mysqli_stmt_get_result($stmt);
+
+        $users = [];
+
+        while ($row = mysqli_fetch_assoc($result)) {
+            $users[] = $row;
+        }
+
+        mysqli_stmt_close($stmt);
+
+        if (count($users) === 0) {
+            throw new RuntimeException(
+                'ID Card tidak ditemukan atau akun tidak aktif.'
+            );
+        }
+
+        if (count($users) > 1) {
+            throw new RuntimeException(
+                'ID Card terdaftar lebih dari satu kali. Hubungi administrator.'
+            );
+        }
+
+        $user = $users[0];
+
+        $idUser = (int)$user['id_user'];
+        $username = trim((string)$user['username']);
+        $level = trim((string)$user['level']);
+
+        if ($username === '') {
+            throw new RuntimeException(
+                'Username user tidak ditemukan.'
+            );
+        }
+
+        // =====================================================
+        // 8. AMBIL SELURUH MAPPING NCVS USER TAPPING
+        // =====================================================
+
+        $mappingStmt = mysqli_prepare(
+            $conn,
+            "SELECT DISTINCT ncvs
+             FROM tbl_user_ncvs
+             WHERE id_user = ?
+             ORDER BY ncvs"
+        );
+
+        if (!$mappingStmt) {
+            throw new RuntimeException(
+                'Gagal mempersiapkan pengambilan mapping NCVS user.'
+            );
+        }
+
+        mysqli_stmt_bind_param(
+            $mappingStmt,
+            'i',
+            $idUser
+        );
+
+        if (!mysqli_stmt_execute($mappingStmt)) {
+            mysqli_stmt_close($mappingStmt);
+
+            throw new RuntimeException(
+                'Gagal mengambil mapping NCVS user.'
+            );
+        }
+
+        $mappingResult = mysqli_stmt_get_result(
+            $mappingStmt
+        );
+
+        $userNcvsList = [];
+
+        while ($mappingRow = mysqli_fetch_assoc($mappingResult)) {
+
+            $mappedNcvs = trim((string)$mappingRow['ncvs']);
+
+            if ($mappedNcvs !== '') {
+                $userNcvsList[] = $mappedNcvs;
+            }
+        }
+
+        mysqli_stmt_close($mappingStmt);
+
+        // Semua otorisasi NCVS menggunakan tbl_user_ncvs.
+        if (empty($userNcvsList)) {
+
+            if ($stage === 'USER') {
+                throw new RuntimeException(
+                    'Team Member belum memiliki mapping NCVS. ' .
+                        'Silakan hubungi admin. Proses tapping belum dapat dilanjutkan.'
+                );
+            }
+
+            throw new RuntimeException(
+                'Team Leader belum memiliki mapping NCVS. ' .
+                    'Silakan hubungi admin.'
+            );
+        }
+
+        // =====================================================
+        // 9. VALIDASI TAHAP TEAM MEMBER
+        // =====================================================
+
+        if ($stage === 'USER') {
+
+            // Pastikan level user adalah Team Member.
+            if ($level !== 'Team Member') {
+                throw new RuntimeException(
+                    'Level tidak sesuai. Tahap ini membutuhkan Team Member.'
+                );
+            }
+
+            // ---------------------------------------------
+            // CEK TM TERHADAP NCVS TRANSAKSI
+            // ---------------------------------------------
+
+            $memberHasTransactionNcvs = $hasNcvsMapping(
+                $userNcvsList,
+                $ncvs
+            );
+
+            // ---------------------------------------------
+            // CEK TM TERHADAP NCVS AKUN LOGIN
+            // ---------------------------------------------
+
+            $memberMatchesLoginNcvs = false;
+
+            foreach ($loginNcvsList as $loginNcvs) {
+
+                if (
+                    $hasNcvsMapping(
+                        $userNcvsList,
+                        $loginNcvs
+                    )
+                ) {
+                    $memberMatchesLoginNcvs = true;
+                    break;
+                }
+            }
+
+            if (!$memberMatchesLoginNcvs) {
+                throw new RuntimeException(
+                    'NCVS Team Member tidak sesuai dengan NCVS akun login (' .
+                        implode(' / ', $loginNcvsList) .
+                        '). Silakan tapping ID Team Member dengan NCVS yang sesuai.'
+                );
+            }
+
+            // ---------------------------------------------
+            // SIMPAN HASIL VALIDASI TEAM MEMBER
+            // ---------------------------------------------
+
+            $_SESSION['tapping_validation_context']['validated']['user'] = [
+                'id_user' => $idUser,
+                'username' => $username,
+                'ncvs' => $userNcvsList,
+                'transaction_ncvs_match' => $memberHasTransactionNcvs,
+                'validated_at' => date('Y-m-d H:i:s')
+            ];
+
+            // ---------------------------------------------
+            // TENTUKAN NEXT STAGE - PLAN
+            // ---------------------------------------------
+
+            if ($contextMode === 'PLAN') {
+
+                if ($memberHasTransactionNcvs) {
+
+                    // PLAN: TM sesuai NCVS transaksi.
+                    // Tidak membutuhkan Team Leader.
+                    $nextStage = 'DONE';
+                } else {
+
+                    // PLAN: TM tidak sesuai.
+                    // Membutuhkan TL dengan NCVS transaksi.
+                    $nextStage = 'LEADER_DATA';
+                }
+            }
+
+            // ---------------------------------------------
+            // TENTUKAN NEXT STAGE - CUSTOM
+            // ---------------------------------------------
+
+            else {
+
+                // CUSTOM selalu membutuhkan TL pertama
+                // dengan mapping NCVS transaksi.
+                $nextStage = 'LEADER_DATA';
+            }
+
+            // Simpan stage berikutnya.
+            $_SESSION['tapping_validation_context']['stage'] =
+                $nextStage;
+
+            // =================================================
+            // NOTIFIKASI TEAM MEMBER
+            // =================================================
+
+            $message = '';
+
+            $memberNcvsText = implode(' / ', $userNcvsList);
+
+            if ($contextMode === 'PLAN') {
+
+                if ($memberHasTransactionNcvs) {
+
+                    $message =
+                        'Tapping ID Team Member berhasil divalidasi. Transaksi akan diproses.';
+                } else {
+
+                    $message =
+                        'Tapping ID Team Member berhasil divalidasi. Silakan tapping ID Team Leader NCVS ' .
+                        $ncvs . '.';
+                }
+            } else {
+
+                if ($memberHasTransactionNcvs) {
+
+                    $message =
+                        'Tapping ID Team Member berhasil divalidasi. Silakan tapping ID Team Leader NCVS ' .
+                        $ncvs . '.';
+                } else {
+
+                    $message =
+                        'Tapping ID Team Member berhasil divalidasi. Silakan tapping ID Team Leader NCVS ' .
+                        $ncvs . '.';
+                }
+            }
+
+            echo json_encode([
+                'status' => 'success',
+                'message' => $message,
+                'next_stage' => $nextStage
+            ], JSON_UNESCAPED_UNICODE);
+
+            exit;
+        }
+
+        // =====================================================
+        // 10. VALIDASI TAHAP TEAM LEADER
+        // =====================================================
+
+        if (
+            $stage === 'LEADER_DATA' ||
+            $stage === 'LEADER_MEMBER'
+        ) {
+
+            // Pastikan level user adalah Team Leader.
+            if ($level !== 'Team Leader') {
+                throw new RuntimeException(
+                    'Level tidak sesuai. Tahap ini membutuhkan Team Leader.'
+                );
+            }
+
+            // Ambil hasil validasi Team Member.
+            $validatedUser =
+                $_SESSION['tapping_validation_context']['validated']['user']
+                ?? null;
+
+            if (!is_array($validatedUser)) {
+                throw new RuntimeException(
+                    'Data validasi Team Member tidak ditemukan.'
+                );
+            }
+
+            $memberNcvsList = $validatedUser['ncvs'] ?? [];
+
+            if (
+                !is_array($memberNcvsList) ||
+                empty($memberNcvsList)
+            ) {
+                throw new RuntimeException(
+                    'Mapping NCVS Team Member tidak ditemukan.'
+                );
+            }
+
+            // =================================================
+            // 10A. TEAM LEADER PERTAMA - LEADER_DATA
+            // =================================================
+
+            if ($stage === 'LEADER_DATA') {
+
+                // TL pertama harus memiliki mapping
+                // yang sesuai dengan NCVS transaksi.
+
+                if (!$hasNcvsMapping($userNcvsList, $ncvs)) {
+                    throw new RuntimeException(
+                        'NCVS Team Leader tidak sesuai dengan NCVS transaksi.'
+                    );
+                }
+
+                // Simpan hasil validasi TL pertama.
+                $_SESSION['tapping_validation_context']['validated']['leader'] = [
+                    'id_user' => $idUser,
+                    'username' => $username,
+                    'ncvs' => $userNcvsList,
+                    'validated_at' => date('Y-m-d H:i:s')
+                ];
+
+                // CUSTOM dengan TM yang tidak memiliki
+                // NCVS transaksi membutuhkan TL kedua.
+
+                if (
+                    $contextMode === 'CUSTOM' &&
+                    empty($validatedUser['transaction_ncvs_match'])
+                ) {
+
+                    $nextStage = 'LEADER_MEMBER';
+                } else {
+
+                    $nextStage = 'DONE';
+                }
+            }
+
+            // =================================================
+            // 10B. TEAM LEADER KEDUA - LEADER_MEMBER
+            // =================================================
+
+            else {
+
+                // Tahap TL kedua hanya berlaku untuk CUSTOM.
+                if ($contextMode !== 'CUSTOM') {
+                    throw new RuntimeException(
+                        'Tahap Team Leader kedua hanya berlaku untuk CUSTOM.'
+                    );
+                }
+
+                // Cari mapping NCVS yang sama antara
+                // Team Leader kedua dan Team Member.
+
+                $memberNcvsMatch = false;
+                $matchedNcvs = null;
+
+                foreach ($memberNcvsList as $memberNcvs) {
+
+                    if (
+                        $hasNcvsMapping(
+                            $userNcvsList,
+                            (string)$memberNcvs
+                        )
+                    ) {
+                        $memberNcvsMatch = true;
+                        $matchedNcvs = $memberNcvs;
+                        break;
+                    }
+                }
+
+                if (!$memberNcvsMatch) {
+                    throw new RuntimeException(
+                        'NCVS Team Leader tidak sesuai dengan mapping NCVS Team Member.'
+                    );
+                }
+
+                // Simpan hasil validasi TL kedua.
+                $_SESSION['tapping_validation_context']['validated']['leader2'] = [
+                    'id_user' => $idUser,
+                    'username' => $username,
+                    'ncvs' => $userNcvsList,
+                    'matched_ncvs' => $matchedNcvs,
+                    'validated_at' => date('Y-m-d H:i:s')
+                ];
+
+                $nextStage = 'DONE';
+            }
+
+            // Simpan stage berikutnya.
+            $_SESSION['tapping_validation_context']['stage'] =
+                $nextStage;
+
+            // =================================================
+            // NOTIFIKASI TEAM LEADER
+            // =================================================
+
+            $message = '';
+
+            if ($stage === 'LEADER_DATA') {
+
+                if ($nextStage === 'LEADER_MEMBER') {
+
+                    $memberNcvsText = implode(
+                        ' / ',
+                        $memberNcvsList
+                    );
+
+                    $message =
+                        'Tapping ID Team Leader berhasil divalidasi. Silakan tapping ID Team Leader NCVS ' .
+                        $memberNcvsText . '.';
+                } else {
+
+                    $message =
+                        'Tapping ID Team Leader berhasil divalidasi. Transaksi akan diproses.';
+                }
+            } elseif ($stage === 'LEADER_MEMBER') {
+
+                $message =
+                    'Tapping ID Team Leader berhasil divalidasi. Transaksi akan diproses.';
+            }
+
+            echo json_encode([
+                'status' => 'success',
+                'message' => $message,
+                'next_stage' => $nextStage
+            ], JSON_UNESCAPED_UNICODE);
+
+            exit;
+        }
+
+        // =====================================================
+        // 11. STAGE TIDAK DIKENALI
+        // =====================================================
+
+        throw new RuntimeException(
+            'Tahap tapping tidak dapat diproses.'
+        );
+    } catch (Throwable $e) {
+
+        // Catat error untuk debugging.
+        error_log(
+            'validate-tapping error: ' . $e->getMessage()
+        );
+
+        http_response_code(200);
+
+        echo json_encode([
+            'status' => 'error',
+            'message' => $e instanceof RuntimeException
+                ? $e->getMessage()
+                : 'Terjadi kesalahan saat memproses validasi tapping.'
+        ], JSON_UNESCAPED_UNICODE);
+    }
+
+    exit;
+}
+
+if (
+    isset($_POST['action']) &&
+    $_POST['action'] === 'finalize-create-barcode'
 ) {
     header('Content-Type: application/json; charset=utf-8');
 
@@ -2767,13 +3821,45 @@ if (
 
     try {
         // =====================================================
-        // 1. VALIDASI PAYLOAD
+        // 1. VALIDASI SESSION TAPPING DAN PENDING PAYLOAD
         // =====================================================
-        $data = json_decode($_POST['data'] ?? '', true);
+        $context = $_SESSION['tapping_validation_context'] ?? null;
+
+        if (!is_array($context)) {
+            throw new RuntimeException('Sesi tapping tidak ditemukan. Silakan ulangi Create Barcode.');
+        }
+
+        if (strtoupper((string)($context['stage'] ?? '')) !== 'DONE') {
+            throw new RuntimeException('Seluruh proses tapping belum selesai.');
+        }
+
+        // Jika finalisasi sudah berhasil, kembalikan hasil sebelumnya.
+        // Ini mencegah INSERT ganda akibat request terkirim lebih dari sekali.
+        if (!empty($context['finalized'])) {
+            $previousResult = $context['finalization_result'] ?? [];
+
+            echo json_encode([
+                'status' => 'done',
+                'success' => (int)($previousResult['success'] ?? 0),
+                'failed' => 0,
+                'mode' => (string)($context['mode'] ?? ''),
+                'barcodes' => array_values($context['barcodes'] ?? []),
+                'message' => 'Transaksi sudah berhasil difinalisasi sebelumnya.'
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        $data = $_SESSION['pending_barcode_payload'] ?? null;
 
         if (!is_array($data)) {
-            throw new RuntimeException('Payload JSON tidak valid.');
+            throw new RuntimeException('Payload transaksi tidak ditemukan. Silakan ulangi Create Barcode.');
         }
+
+        if (!empty($context['finalizing'])) {
+            throw new RuntimeException('Transaksi sedang dalam proses finalisasi.');
+        }
+
+        $_SESSION['tapping_validation_context']['finalizing'] = true;
 
         $global = $data['global'] ?? [];
         $detail = $data['detail'] ?? [];
@@ -2792,6 +3878,13 @@ if (
         $statusLot = trim((string)($global['lot_code'] ?? ''));
 
         $transacBy = trim((string)($_SESSION['username'] ?? ''));
+
+        if (
+            strtoupper((string)($context['mode'] ?? '')) !== $mode ||
+            trim((string)($context['ncvs'] ?? '')) !== $ncvs
+        ) {
+            throw new RuntimeException('Payload tidak sesuai dengan sesi tapping yang sudah divalidasi.');
+        }
 
         if (
             $bucket === '' ||
@@ -2819,6 +3912,17 @@ if (
                 'PLAN QTY tidak ditemukan. Periksa payload plan_detail di JavaScript.'
             );
         }
+
+        $validated = $_SESSION['tapping_validation_context']['validated'] ?? [];
+
+        $userValidatedBy = $validated['user']['username'] ?? null;
+        $userValidatedAt = $validated['user']['validated_at'] ?? null;
+
+        $leaderValidatedBy = $validated['leader']['username'] ?? null;
+        $leaderValidatedAt = $validated['leader']['validated_at'] ?? null;
+
+        $leader2ValidatedBy = $validated['leader2']['username'] ?? null;
+        $leader2ValidatedAt = $validated['leader2']['validated_at'] ?? null;
 
         // =====================================================
         // 2. VALIDASI DAN SIAPKAN KOMPONEN UTAMA
@@ -3126,8 +4230,9 @@ if (
 
         // =====================================================
         // 8. SIAPKAN INSERT TRANSAKSI
-        // Hanya menyimpan komponen utama.
+        // Hanya menyimpan komponen utama. Print status READY agar langsung bisa diambil untuk print.
         // =====================================================
+
         $insertStmt = mysqli_prepare(
             $conn,
             "INSERT INTO tbl_transactions (
@@ -3160,10 +4265,17 @@ if (
                 status,
                 mode,
                 print_status,
-                barcode_status
+                barcode_status,
+                user_validated_by,
+                user_validated_at,
+                leader_validated_by,
+                leader_validated_at,
+                leader2_validated_by,
+                leader2_validated_at
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                1, ?, ?, ?, ?, ?, ?, NULL, ?, NOW(), ?, 'PENDING', ?, 'NOT_READY', 'ACTIVE'
+                1, ?, ?, ?, ?, ?, ?, NULL, ?, NOW(), ?, 'PENDING', ?, 'READY', 'ACTIVE',
+                ?, ?, ?, ?, ?, ?
             )"
         );
 
@@ -3191,6 +4303,23 @@ if (
         $updatedAt = date('Y-m-d H:i:s');
         $gate = 'PRE_SETTING';
 
+        $shortageStmt = mysqli_prepare(
+            $conn,
+            "INSERT INTO tbl_transaksi_kekurangan (
+        id_trans,
+        global_barcode,
+        barcode,
+        id_komponen,
+        nm_komponen,
+        id_group,
+        lot,
+        size,
+        gate,
+        qty_kekurangan,
+        status
+    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'PRE_SETTING', ?, 'pending')"
+        );
+
         foreach ($candidates as $candidate) {
             $jobOrder = $candidate['job_order'];
             $lot = $candidate['lot'];
@@ -3217,9 +4346,10 @@ if (
                 ? $component['nm_vendor']
                 : null;
 
+
             mysqli_stmt_bind_param(
                 $insertStmt,
-                str_repeat('s', 24),
+                str_repeat('s', 30),
                 $jobOrder,
                 $bucket,
                 $po['po_code'],
@@ -3243,7 +4373,13 @@ if (
                 $barcode,
                 $transacBy,
                 $updatedAt,
-                $mode
+                $mode,
+                $userValidatedBy,
+                $userValidatedAt,
+                $leaderValidatedBy,
+                $leaderValidatedAt,
+                $leader2ValidatedBy,
+                $leader2ValidatedAt
             );
 
             mysqli_stmt_execute($insertStmt);
@@ -3266,6 +4402,33 @@ if (
             );
 
             mysqli_stmt_execute($eventStmt);
+
+            // =====================================================
+            // CATAT KEKURANGAN UNTUK MODE CUSTOM
+            // =====================================================
+            if ($mode === 'CUSTOM') {
+                $qtyKekurangan = (int)$qtyPlan - (int)$qtyPreSetting;
+
+                if ($qtyKekurangan > 0) {
+                    $qtyKekuranganStr = (string)$qtyKekurangan;
+
+                    mysqli_stmt_bind_param(
+                        $shortageStmt,
+                        'isssisss',
+                        $idTrans,
+                        $barcode,
+                        $idMain,
+                        $nmMain,
+                        $idGroup,
+                        $lot,
+                        $size,
+                        $qtyKekuranganStr
+                    );
+
+                    mysqli_stmt_execute($shortageStmt);
+                }
+            }
+
             $success++;
 
             $logDetail[] = [
@@ -3283,6 +4446,7 @@ if (
 
         mysqli_stmt_close($insertStmt);
         mysqli_stmt_close($eventStmt);
+        mysqli_stmt_close($shortageStmt);
 
         // =====================================================
         // 9. INSERT TLOG; KEGAGALAN MEMBATALKAN SEMUA INSERT
@@ -3316,18 +4480,27 @@ if (
         $transactionStarted = false;
 
         if ($lockAcquired) {
-            $releaseStmt = mysqli_prepare($conn, 'SELECT RELEASE_LOCK(?)');
-            mysqli_stmt_bind_param($releaseStmt, 's', $lockName);
-            mysqli_stmt_execute($releaseStmt);
-            mysqli_stmt_close($releaseStmt);
+            try {
+                $releaseStmt = mysqli_prepare($conn, 'SELECT RELEASE_LOCK(?)');
+                mysqli_stmt_bind_param($releaseStmt, 's', $lockName);
+                mysqli_stmt_execute($releaseStmt);
+                mysqli_stmt_close($releaseStmt);
+            } catch (Throwable $releaseError) {
+                // COMMIT sudah berhasil. Kegagalan melepas named lock
+                // tidak boleh membuat finalisasi dianggap gagal dan diulang.
+                error_log('finalize-create-barcode release lock warning: ' . $releaseError->getMessage());
+            }
             $lockAcquired = false;
         }
 
-        $_SESSION['tapping_validation_context'] = [
-            'mode'     => $mode,
-            'ncvs'     => $ncvs,
-            'barcodes' => array_values($createdBarcodes),
-            'stage'    => 'USER'
+        // Pertahankan context tapping DONE dan simpan hasil finalisasi.
+        $_SESSION['tapping_validation_context']['barcodes'] = array_values($createdBarcodes);
+        $_SESSION['tapping_validation_context']['finalizing'] = false;
+        $_SESSION['tapping_validation_context']['finalized'] = true;
+        $_SESSION['tapping_validation_context']['finalized_at'] = date('Y-m-d H:i:s');
+        $_SESSION['tapping_validation_context']['finalization_result'] = [
+            'success' => $success,
+            'barcodes' => array_values($createdBarcodes)
         ];
 
         echo json_encode([
@@ -3335,9 +4508,14 @@ if (
             'success' => $success,
             'failed' => 0,
             'mode' => $mode,
+            'barcodes' => array_values($createdBarcodes),
             'message' => 'Transaksi berhasil disimpan.'
         ], JSON_UNESCAPED_UNICODE);
     } catch (Throwable $e) {
+        if (isset($_SESSION['tapping_validation_context']) && is_array($_SESSION['tapping_validation_context'])) {
+            $_SESSION['tapping_validation_context']['finalizing'] = false;
+        }
+
         if ($transactionStarted) {
             mysqli_rollback($conn);
         }
@@ -3365,7 +4543,7 @@ if (
             $message = 'Konfirmasi transaksi ditolak karena ditemukan data transaksi duplikat. Silakan periksa kembali data yang dipilih.';
         }
 
-        error_log('create-barcode error: ' . $e->getMessage());
+        error_log('finalize-create-barcode error: ' . $e->getMessage());
 
         http_response_code(200);
 
@@ -3379,238 +4557,6 @@ if (
     exit;
 }
 
-if (
-    isset($_POST['action']) &&
-    $_POST['action'] === 'validate-tapping'
-) {
-    header('Content-Type: application/json; charset=utf-8');
-
-    $dbTransactionStarted = false;
-
-    try {
-        $context = $_SESSION['tapping_validation_context'] ?? null;
-
-        if (!is_array($context)) {
-            throw new RuntimeException(
-                'Sesi transaksi tidak ditemukan. Silakan ulangi Create Barcode.'
-            );
-        }
-
-        $mode = strtoupper(trim((string)($_POST['mode'] ?? '')));
-        $stage = strtoupper(trim((string)($_POST['stage'] ?? '')));
-        $idCard = trim((string)($_POST['id_card'] ?? ''));
-
-        $contextMode = strtoupper((string)($context['mode'] ?? ''));
-        $contextStage = strtoupper((string)($context['stage'] ?? ''));
-        $ncvs = trim((string)($context['ncvs'] ?? ''));
-        $barcodes = array_values(array_unique(
-            array_filter(
-                $context['barcodes'] ?? [],
-                static fn($value) => is_string($value) && trim($value) !== ''
-            )
-        ));
-
-        if (
-            !in_array($contextMode, ['PLAN', 'CUSTOM'], true) ||
-            $mode !== $contextMode
-        ) {
-            throw new RuntimeException(
-                'Mode tapping tidak sesuai dengan transaksi.'
-            );
-        }
-
-        if ($stage !== $contextStage) {
-            throw new RuntimeException(
-                'Tahap tapping tidak sesuai urutan.'
-            );
-        }
-
-        if (!in_array($stage, ['USER', 'LEADER'], true)) {
-            throw new RuntimeException('Tahap tapping tidak valid.');
-        }
-
-        if ($stage === 'LEADER' && $contextMode !== 'CUSTOM') {
-            throw new RuntimeException(
-                'Tapping Team Leader hanya berlaku untuk mode CUSTOM.'
-            );
-        }
-
-        if ($idCard === '') {
-            throw new RuntimeException('ID Card tidak boleh kosong.');
-        }
-
-        if ($ncvs === '' || empty($barcodes)) {
-            throw new RuntimeException(
-                'Data barcode pada sesi transaksi tidak ditemukan.'
-            );
-        }
-
-        $expectedLevel = ($stage === 'USER')
-            ? 'Team Member'
-            : 'Team Leader';
-
-        $stmt = mysqli_prepare(
-            $conn,
-            "SELECT username, level, ncvs
-             FROM tbl_user
-             WHERE id_card = ?
-               AND is_deleted = 0
-             LIMIT 2"
-        );
-
-        mysqli_stmt_bind_param($stmt, 's', $idCard);
-        mysqli_stmt_execute($stmt);
-
-        $result = mysqli_stmt_get_result($stmt);
-        $users = [];
-
-        while ($row = mysqli_fetch_assoc($result)) {
-            $users[] = $row;
-        }
-
-        mysqli_stmt_close($stmt);
-
-        if (count($users) === 0) {
-            throw new RuntimeException(
-                'ID Card tidak ditemukan atau akun tidak aktif.'
-            );
-        }
-
-        if (count($users) > 1) {
-            throw new RuntimeException(
-                'ID Card terdaftar lebih dari satu kali. Hubungi administrator.'
-            );
-        }
-
-        $user = $users[0];
-
-        if (trim((string)$user['level']) !== $expectedLevel) {
-            throw new RuntimeException(
-                'Level tidak sesuai. Tahap ini membutuhkan ' .
-                    $expectedLevel . '.'
-            );
-        }
-
-        if (
-            trim((string)($user['ncvs'] ?? '')) === '' ||
-            strcasecmp(trim((string)$user['ncvs']), $ncvs) !== 0
-        ) {
-            throw new RuntimeException(
-                'NCVS user tidak sesuai dengan NCVS transaksi.'
-            );
-        }
-
-        $username = trim((string)$user['username']);
-
-        if ($username === '') {
-            throw new RuntimeException(
-                'Username user tidak ditemukan.'
-            );
-        }
-
-        mysqli_begin_transaction($conn);
-        $dbTransactionStarted = true;
-
-        if ($stage === 'USER') {
-            if ($contextMode === 'PLAN') {
-                // PLAN selesai setelah validasi Team Member.
-                $update = mysqli_prepare(
-                    $conn,
-                    "UPDATE tbl_transactions
-             SET user_validated_by = ?,
-                 user_validated_at = NOW(),
-                 print_status = 'READY'
-             WHERE ncvs = ?
-               AND barcode = ?
-               AND mode = 'PLAN'
-               AND print_status = 'NOT_READY'"
-                );
-            } else {
-                // CUSTOM masih menunggu validasi Team Leader.
-                $update = mysqli_prepare(
-                    $conn,
-                    "UPDATE tbl_transactions
-             SET user_validated_by = ?,
-                 user_validated_at = NOW()
-             WHERE ncvs = ?
-               AND barcode = ?
-               AND mode = 'CUSTOM'
-               AND print_status = 'NOT_READY'"
-                );
-            }
-        } else {
-            // CUSTOM baru siap dicetak setelah validasi Team Leader.
-            $update = mysqli_prepare(
-                $conn,
-                "UPDATE tbl_transactions
-         SET leader_validated_by = ?,
-             leader_validated_at = NOW(),
-             print_status = 'READY'
-         WHERE ncvs = ?
-           AND barcode = ?
-           AND mode = 'CUSTOM'
-           AND user_validated_by IS NOT NULL
-           AND print_status = 'NOT_READY'"
-            );
-        }
-
-        $updatedRows = 0;
-
-        foreach ($barcodes as $barcode) {
-            mysqli_stmt_bind_param(
-                $update,
-                'sss',
-                $username,
-                $ncvs,
-                $barcode
-            );
-
-            mysqli_stmt_execute($update);
-            $updatedRows += mysqli_stmt_affected_rows($update);
-        }
-
-        mysqli_stmt_close($update);
-
-        if ($updatedRows === 0) {
-            throw new RuntimeException(
-                'Tidak ada transaksi yang berhasil diperbarui. ' .
-                    'Periksa kembali barcode dan NCVS.'
-            );
-        }
-
-        mysqli_commit($conn);
-        $dbTransactionStarted = false;
-
-        if ($stage === 'USER' && $contextMode === 'CUSTOM') {
-            $_SESSION['tapping_validation_context']['stage'] = 'LEADER';
-            $nextStage = 'LEADER';
-        } else {
-            $_SESSION['tapping_validation_context']['stage'] = 'DONE';
-            $nextStage = 'DONE';
-        }
-
-        echo json_encode([
-            'status' => 'success',
-            'message' => 'Validasi berhasil. ' .
-                $updatedRows . ' row transaksi diperbarui.',
-            'updated_rows' => $updatedRows,
-            'next_stage' => $nextStage
-        ], JSON_UNESCAPED_UNICODE);
-    } catch (Throwable $e) {
-        if ($dbTransactionStarted) {
-            mysqli_rollback($conn);
-        }
-
-        echo json_encode([
-            'status' => 'error',
-            'message' => $e instanceof RuntimeException
-                ? $e->getMessage()
-                : 'Terjadi kesalahan saat memproses validasi tapping.'
-        ], JSON_UNESCAPED_UNICODE);
-    }
-
-    exit;
-}
 function formatLotRange(array $lots): string
 {
     $lots = array_values(array_unique(array_map(
@@ -3707,17 +4653,11 @@ if (
     SUM(CAST(qty_pre_setting AS UNSIGNED)) AS total_qty,
     MAX(nm_komponen_in) AS main_component
 FROM tbl_transactions
+
 WHERE ncvs = ?
   AND barcode IN ($placeholders)
   AND print_status = 'READY'
-  AND user_validated_by IS NOT NULL
-  AND (
-      mode = 'PLAN'
-      OR (
-          mode = 'CUSTOM'
-          AND leader_validated_by IS NOT NULL
-      )
-  )
+
 GROUP BY
     barcode,
     bucket,
@@ -3734,8 +4674,19 @@ ORDER BY barcode
         $types = str_repeat('s', count($barcodes) + 1);
         $params = array_merge([$ncvs], $barcodes);
 
-        mysqli_stmt_bind_param($stmt, $types, ...$params);
+        $bindParams = [$stmt, $types];
+
+        foreach ($params as $key => $value) {
+            $bindParams[] = &$params[$key];
+        }
+
+        call_user_func_array(
+            'mysqli_stmt_bind_param',
+            $bindParams
+        );
+
         mysqli_stmt_execute($stmt);
+
 
         $result = mysqli_stmt_get_result($stmt);
         $labels = [];
@@ -3890,18 +4841,12 @@ ORDER BY barcode
         barcode,
         lot
     FROM tbl_transactions
-    WHERE ncvs = ?
-      AND barcode IN ($lotPlaceholders)
-      AND print_status = 'READY'
-      AND user_validated_by IS NOT NULL
-      AND (
-          mode = 'PLAN'
-          OR (
-              mode = 'CUSTOM'
-              AND leader_validated_by IS NOT NULL
-          )
-      )
-      AND lot IS NOT NULL
+    
+WHERE ncvs = ?
+  AND barcode IN ($lotPlaceholders)
+  AND print_status = 'READY'
+  AND lot IS NOT NULL
+
       AND TRIM(lot) <> ''
     ORDER BY barcode, CAST(lot AS UNSIGNED)
 ";
@@ -5221,74 +6166,70 @@ if (
         //    NCVS DIAMBIL DARI TRANSAKSI SUMBER
         // =====================================================
 
+
         $sourceStmt = mysqli_prepare(
             $conn,
             "SELECT
-                id_trans,
-                job_order,
-                bucket,
-                po_code,
-                po_item,
-                style,
-                model,
-                ncvs,
-                lot,
-                size,
-                qty_plan,
-                status_lot,
-                id_komponen_in,
-                nm_komponen_in,
-                id_komponen_out,
-                nm_komponen_out,
-                is_main_komponen,
-                id_group,
-                id_vendor,
-                nm_vendor,
-                qty_pre_setting,
-                qty_sm_subcont,
-                qty_send_to_wh,
-                qty_wh_from_sm,
-                qty_send_to_vendor,
-                qty_vendor_from_wh,
-                qty_vendor_send_wh,
-                qty_wh_from_vendor,
-                qty_qc,
-                qty_wh_send_sm,
-                qty_sm_from_wh,
-                qty_sm_send_prod,
-                GREATEST(
-                    COALESCE(
-                        CAST(NULLIF(qty_plan, '') AS DECIMAL(10,2)),
-                        0
-                    ) -
-                    COALESCE(
-                        CAST(NULLIF(qty_pre_setting, '') AS DECIMAL(10,2)),
-                        0
-                    ),
-                    0
-                ) AS qty_remaining,
-                last_gate,
-                global_barcode,
-                barcode,
-                count_barcode,
-                transac_by,
-                created_at,
-                updated_at,
-                status,
-                print_status,
-                mode,
-                user_validated_by,
-                user_validated_at,
-                leader_validated_by,
-                leader_validated_at,
-                barcode_status,
-                parent_barcode
-             FROM tbl_transactions
-             WHERE id_trans = ?
-               AND mode = 'CUSTOM'
-               AND last_gate = 'PRE_SETTING'
-             LIMIT 1
-             FOR UPDATE"
+        k.id_kekurangan,
+        t.id_trans,
+        t.job_order,
+        t.bucket,
+        t.po_code,
+        t.po_item,
+        t.style,
+        t.model,
+        t.ncvs,
+        t.lot,
+        t.size,
+        t.qty_plan,
+        t.status_lot,
+        t.id_komponen_in,
+        t.nm_komponen_in,
+        t.id_komponen_out,
+        t.nm_komponen_out,
+        t.is_main_komponen,
+        t.id_group,
+        t.id_vendor,
+        t.nm_vendor,
+        t.qty_pre_setting,
+        t.qty_sm_subcont,
+        t.qty_send_to_wh,
+        t.qty_wh_from_sm,
+        t.qty_send_to_vendor,
+        t.qty_vendor_from_wh,
+        t.qty_vendor_send_wh,
+        t.qty_wh_from_vendor,
+        t.qty_qc,
+        t.qty_wh_send_sm,
+        t.qty_sm_from_wh,
+        t.qty_sm_send_prod,
+        CAST(
+            NULLIF(k.qty_kekurangan, '') AS DECIMAL(10,2)
+        ) AS qty_remaining,
+        t.last_gate,
+        t.global_barcode,
+        t.barcode,
+        t.count_barcode,
+        t.transac_by,
+        t.created_at,
+        t.updated_at,
+        t.status,
+        t.print_status,
+        t.mode,
+        t.user_validated_by,
+        t.user_validated_at,
+        t.leader_validated_by,
+        t.leader_validated_at,
+        t.barcode_status,
+        t.parent_barcode
+    FROM tbl_transaksi_kekurangan k
+    INNER JOIN tbl_transactions t
+        ON t.id_trans = k.id_trans
+    WHERE k.id_trans = ?
+      AND k.status = 'pending'
+      AND k.gate = 'PRE_SETTING'
+    LIMIT 1
+    FOR UPDATE"
         );
 
         $sources = [];
@@ -5310,6 +6251,12 @@ if (
             if (!$source) {
                 throw new RuntimeException(
                     'Data sumber tidak ditemukan atau tidak memenuhi syarat fulfillment.'
+                );
+            }
+
+            if (empty($source['id_kekurangan'])) {
+                throw new RuntimeException(
+                    'Data kekurangan tidak ditemukan.'
                 );
             }
 
@@ -5606,7 +6553,7 @@ if (
             $qtySmFromWh = $source['qty_sm_from_wh'];
             $qtySmSendProd = $source['qty_sm_send_prod'];
 
-            $lastGate = $source['last_gate'];
+            $lastGate = 'PRE_SETTING';
             $globalBarcode = $source['global_barcode'];
             $status = $source['status'];
             $mode = $source['mode'];
@@ -5751,6 +6698,39 @@ if (
         mysqli_stmt_close($eventStmt);
 
         // =====================================================
+        // 6A. UPDATE STATUS SHORTAGE MENJADI CONFIRMED
+        // =====================================================
+
+        $confirmShortageStmt = mysqli_prepare(
+            $conn,
+            "UPDATE tbl_transaksi_kekurangan
+     SET status = 'confirmed'
+     WHERE id_kekurangan = ?
+       AND status = 'pending'
+       AND gate = 'PRE_SETTING'"
+        );
+
+        foreach ($sources as $source) {
+            $idKekurangan = (int)$source['id_kekurangan'];
+
+            mysqli_stmt_bind_param(
+                $confirmShortageStmt,
+                'i',
+                $idKekurangan
+            );
+
+            mysqli_stmt_execute($confirmShortageStmt);
+
+            if (mysqli_stmt_affected_rows($confirmShortageStmt) !== 1) {
+                throw new RuntimeException(
+                    'Status data kekurangan gagal diperbarui. Silakan muat ulang dan coba kembali.'
+                );
+            }
+        }
+
+        mysqli_stmt_close($confirmShortageStmt);
+
+        // =====================================================
         // 7. SIMPAN LOG
         // =====================================================
 
@@ -5782,27 +6762,6 @@ if (
 
         mysqli_stmt_execute($logStmt);
         mysqli_stmt_close($logStmt);
-
-
-        // =====================================================
-        // 8. COMMIT DAN LEPAS LOCK
-        // =====================================================
-
-        mysqli_commit($conn);
-        $transactionStarted = false;
-
-        if ($lockAcquired) {
-            $releaseStmt = mysqli_prepare(
-                $conn,
-                'SELECT RELEASE_LOCK(?)'
-            );
-
-            mysqli_stmt_bind_param($releaseStmt, 's', $lockName);
-            mysqli_stmt_execute($releaseStmt);
-            mysqli_stmt_close($releaseStmt);
-
-            $lockAcquired = false;
-        }
 
         // Agregasi label dilakukan setelah transaksi berhasil.
         $labels = aggregateFulfillmentLabels($labels);
@@ -5884,6 +6843,31 @@ if (
         unset($label);
 
         mysqli_stmt_close($totalOrderStmt);
+
+        // =====================================================
+        // 8. COMMIT DAN LEPAS LOCK
+        // =====================================================
+
+        mysqli_commit($conn);
+        $transactionStarted = false;
+
+        if ($lockAcquired) {
+            $releaseStmt = mysqli_prepare(
+                $conn,
+                'SELECT RELEASE_LOCK(?)'
+            );
+
+            mysqli_stmt_bind_param(
+                $releaseStmt,
+                's',
+                $lockName
+            );
+
+            mysqli_stmt_execute($releaseStmt);
+            mysqli_stmt_close($releaseStmt);
+
+            $lockAcquired = false;
+        }
 
         // Session khusus fulfillment; tidak menggunakan session tapping.
         $_SESSION['qty_fulfillment_print_context'] = [
@@ -6005,22 +6989,20 @@ if (
             $check = mysqli_prepare(
                 $conn,
                 "SELECT COUNT(*) AS total
-         FROM tbl_transactions
-         WHERE barcode = ?
-           AND print_status = 'READY'
-           AND mode = 'CUSTOM'
-           AND last_gate = 'PRE_SETTING'"
+     FROM tbl_transactions
+     WHERE barcode = ?
+       AND print_status = 'READY'
+       AND mode = 'CUSTOM'"
             );
 
             // 2. Siapkan update status.
             $update = mysqli_prepare(
                 $conn,
                 "UPDATE tbl_transactions
-         SET print_status = ?
-         WHERE barcode = ?
-           AND print_status = 'READY'
-           AND mode = 'CUSTOM'
-           AND last_gate = 'PRE_SETTING'"
+     SET print_status = ?
+     WHERE barcode = ?
+       AND print_status = 'READY'
+       AND mode = 'CUSTOM'"
             );
 
             $expectedRows = 0;

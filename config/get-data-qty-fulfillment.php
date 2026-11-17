@@ -123,76 +123,47 @@ try {
         // ---------------------------------------------
 
         $detailSql = "
-            SELECT
-                MAX(id_trans) AS id_trans,
-                job_order,
-                bucket,
-                po_code,
-                po_item,
-                model,
-                style,
-                ncvs,
-                lot,
-                size,
-                id_komponen_in,
-                nm_komponen_in AS komponen,
-                id_komponen_out,
-                nm_komponen_out,
-                id_group,
-                id_vendor,
-                nm_vendor,
+    SELECT
+        k.id_trans,
+        t.job_order,
+        t.bucket,
+        t.po_code,
+        t.po_item,
+        t.model,
+        t.style,
+        t.ncvs,
+        k.lot,
+        k.size,
+        k.id_komponen AS id_komponen_in,
+        k.nm_komponen AS komponen,
+        t.id_komponen_out,
+        t.nm_komponen_out,
+        k.id_group,
+        t.id_vendor,
+        t.nm_vendor,
 
-                MAX(qty_plan) AS qty_plan,
+        CAST(
+            NULLIF(k.qty_kekurangan, '')
+            AS DECIMAL(10,2)
+        ) AS qty_remaining
 
-                SUM(
-                    COALESCE(qty_pre_setting, 0)
-                ) AS qty_pre_setting,
+    FROM tbl_transaksi_kekurangan k
 
-                GREATEST(
-                    MAX(qty_plan) -
-                    SUM(COALESCE(qty_pre_setting, 0)),
-                    0
-                ) AS qty_remaining
+    INNER JOIN tbl_transactions t
+        ON t.id_trans = k.id_trans
 
-            FROM tbl_transactions
+    WHERE k.status = 'pending'
+      AND k.gate = 'PRE_SETTING'
+      AND t.bucket = ?
+      AND t.model = ?
+      AND t.style = ?
+      AND t.ncvs = ?
+      AND k.nm_komponen = ?
 
-            WHERE mode = 'CUSTOM'
-              AND last_gate = 'PRE_SETTING'
-              AND bucket = ?
-              AND model = ?
-              AND style = ?
-              AND ncvs = ?
-              AND nm_komponen_in = ?
-              AND barcode_status = 'ACTIVE'
-
-            GROUP BY
-                job_order,
-                bucket,
-                po_code,
-                po_item,
-                model,
-                style,
-                ncvs,
-                lot,
-                size,
-                id_komponen_in,
-                nm_komponen_in,
-                id_komponen_out,
-                nm_komponen_out,
-                id_group,
-                id_vendor,
-                nm_vendor
-
-            HAVING GREATEST(
-                MAX(qty_plan) -
-                SUM(COALESCE(qty_pre_setting, 0)),
-                0
-            ) > 0
-
-            ORDER BY
-                CAST(lot AS UNSIGNED) ASC,
-                size ASC
-        ";
+    ORDER BY
+        CAST(k.lot AS UNSIGNED) ASC,
+        k.size ASC
+";
 
         $detailStmt = mysqli_prepare($conn, $detailSql);
 
@@ -275,87 +246,41 @@ try {
     // =====================================================
 
     $baseSql = "
-        SELECT
-            bucket,
-            model,
-            style,
-            ncvs,
-            nm_komponen_in AS main_component,
-            SUM(qty_debt) AS total_remaining
+    SELECT
+        t.bucket,
+        t.model,
+        t.style,
+        t.ncvs,
+        k.nm_komponen AS main_component,
 
-        FROM (
+        SUM(
+            COALESCE(
+                CAST(
+                    NULLIF(k.qty_kekurangan, '')
+                    AS DECIMAL(10,2)
+                ),
+                0
+            )
+        ) AS total_remaining
 
-            SELECT
-                job_order,
-                po_code,
-                po_item,
-                bucket,
-                model,
-                style,
-                ncvs,
-                lot,
-                size,
-                id_komponen_in,
-                nm_komponen_in,
-                id_komponen_out,
-                nm_komponen_out,
-                id_group,
-                id_vendor,
-                nm_vendor,
+    FROM tbl_transaksi_kekurangan k
 
-                GREATEST(
-                    MAX(
-                        COALESCE(
-                            CAST(NULLIF(qty_plan, '') AS DECIMAL(10,2)),
-                            0
-                        )
-                    )
-                    -
-                    SUM(
-                        COALESCE(
-                            CAST(NULLIF(qty_pre_setting, '') AS DECIMAL(10,2)),
-                            0
-                        )
-                    ),
-                    0
-                ) AS qty_debt
+    INNER JOIN tbl_transactions t
+        ON t.id_trans = k.id_trans
 
-            FROM tbl_transactions
+    WHERE k.status = 'pending'
+      AND k.gate = 'PRE_SETTING'
+      AND (? = '' OR t.ncvs = ?)
 
-            WHERE mode = 'CUSTOM'
-              AND last_gate = 'PRE_SETTING'
-              AND barcode_status = 'ACTIVE'
-              AND (? = '' OR ncvs = ?)
+    GROUP BY
+        t.bucket,
+        t.model,
+        t.style,
+        t.ncvs,
+        k.nm_komponen
 
-            GROUP BY
-                job_order,
-                po_code,
-                po_item,
-                bucket,
-                model,
-                style,
-                ncvs,
-                lot,
-                size,
-                id_komponen_in,
-                nm_komponen_in,
-                id_komponen_out,
-                nm_komponen_out,
-                id_group,
-                id_vendor,
-                nm_vendor
-
-            HAVING qty_debt > 0
-
-        ) AS source_debts
-
-        GROUP BY
-            bucket,
-            model,
-            style,
-            ncvs,
-            nm_komponen_in
-    ";
+    HAVING total_remaining > 0
+";
 
     // =====================================================
     // 7. TOTAL RECORDS
