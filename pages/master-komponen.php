@@ -27,6 +27,12 @@ $sql = "
     COUNT(DISTINCT p.id_input) AS total_komponen,
 
     GROUP_CONCAT(
+      DISTINCT k_in.nama_komponen
+      ORDER BY k_in.nama_komponen
+      SEPARATOR ', '
+    ) AS input_komponen,
+
+    GROUP_CONCAT(
         DISTINCT vp.id_vendor
         ORDER BY v.name_vendor
         SEPARATOR ','
