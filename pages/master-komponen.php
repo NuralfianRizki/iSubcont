@@ -9,29 +9,59 @@ $username = $_SESSION['username'];
 
 // Ambil data komponen proses
 $sql = "
-    SELECT 
+    SELECT
+    p.id_group AS id_group,
+
     k_out.id_komponen AS id_output,
-    MAX(k.model) AS model,
-    MAX(k.style) AS style,
-    GROUP_CONCAT(DISTINCT k_in.nama_komponen ORDER BY k_in.nama_komponen SEPARATOR ', ') AS input_komponen,
-    GROUP_CONCAT(DISTINCT vp.id_vendor ORDER BY v.name_vendor SEPARATOR ',') AS vendor_ids,
+    k_out.model AS model,
+    k_out.style AS style,
     k_out.nama_komponen AS output_komponen,
-    GROUP_CONCAT(DISTINCT v.name_vendor ORDER BY v.name_vendor SEPARATOR ', ') AS vendors
-FROM tbl_komponen_proses p
-JOIN tbl_komponen k_in 
-      ON p.id_input = k_in.id_komponen
-JOIN tbl_komponen k_out 
-      ON p.id_output = k_out.id_komponen
-JOIN tbl_komponen k 
-      ON k.id_komponen = p.id_output
-LEFT JOIN tbl_vendor_proses vp 
-      ON vp.id_proses = p.id_proses         -- ✅ join sesuai struktur
-LEFT JOIN tbl_vendor v 
-      ON v.id_vendor = vp.id_vendor
-WHERE k_in.is_deleted = 0 
-  AND k_out.is_deleted = 0
-GROUP BY k_out.id_komponen
-ORDER BY k.timestamp desc;
+
+    MAX(
+        CASE
+            WHEN p.is_main = 1
+            THEN k_in.nama_komponen
+        END
+    ) AS main_component,
+
+    COUNT(DISTINCT p.id_input) AS total_komponen,
+
+    GROUP_CONCAT(
+        DISTINCT vp.id_vendor
+        ORDER BY v.name_vendor
+        SEPARATOR ','
+    ) AS vendor_ids,
+
+    GROUP_CONCAT(
+        DISTINCT v.name_vendor
+        ORDER BY v.name_vendor
+        SEPARATOR ', '
+    ) AS vendors
+
+    FROM tbl_komponen_proses p
+
+    JOIN tbl_komponen k_in
+        ON p.id_input = k_in.id_komponen
+
+    JOIN tbl_komponen k_out
+        ON p.id_output = k_out.id_komponen
+
+    LEFT JOIN tbl_vendor_proses vp
+        ON vp.id_proses = p.id_proses
+
+    LEFT JOIN tbl_vendor v
+        ON v.id_vendor = vp.id_vendor
+
+    WHERE
+        k_in.is_deleted = 0
+        AND k_out.is_deleted = 0
+
+    GROUP BY
+        p.id_group,
+        k_out.id_komponen
+
+    ORDER BY
+        k_out.timestamp DESC
 ";
 
 $result = $conn->query($sql);
@@ -413,7 +443,35 @@ $result = $conn->query($sql);
                         <td><?= $i ?></td>
                         <td><?= htmlspecialchars($row['model']) ?></td>
                         <td><?= htmlspecialchars($row['style']) ?></td>
-                        <td><?= htmlspecialchars($row['input_komponen']) ?></td>
+                        <td>
+                          <button type="button"
+                            class="btn btn-link text-decoration-none p-0 text-start btnDetailKomponen"
+                            data-id-group="<?= (int) $row['id_group'] ?>"
+                            data-main-component="<?= htmlspecialchars(
+                                                    (string) ($row['main_component'] ?? ''),
+                                                    ENT_QUOTES,
+                                                    'UTF-8'
+                                                  ) ?>">
+
+                            <div>
+                              <span class="badge rounded-pill bg-primary-subtle text-primary"
+                                style="font-size: 13px;">
+
+                                <?= htmlspecialchars(
+                                  (string) ($row['main_component'] ?? '-'),
+                                  ENT_QUOTES,
+                                  'UTF-8'
+                                ) ?>
+
+                              </span>
+
+                              <div class="text-muted mt-1" style="font-size: 11px;">
+                                <?= (int) $row['total_komponen'] ?> komponen
+                              </div>
+                            </div>
+
+                          </button>
+                        </td>
                         <td><?= htmlspecialchars($row['output_komponen']) ?></td>
                         <td><?= htmlspecialchars($row['vendors']) ?></td>
                         <td>
@@ -461,10 +519,105 @@ $result = $conn->query($sql);
               </div>
               <!-- End Table with stripped rows -->
             </div>
+
           </div>
         </div>
       </div>
     </section>
+
+    <!-- Modal Detail Komponen -->
+    <div class="modal fade" id="modalDetailKomponen" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+
+          <!-- Header -->
+          <div class="modal-header bg-primary text-white">
+
+            <h5 class="modal-title">
+              <i class="bi bi-diagram-3 me-2"></i>
+              Detail Grup Komponen
+            </h5>
+
+            <button type="button"
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal">
+            </button>
+
+          </div>
+
+          <!-- Body -->
+          <div class="modal-body">
+
+            <div class="mb-3">
+              <label class="form-label text-muted">
+                Main Component
+              </label>
+
+              <h5 id="detailMainComponent" class="text-primary mb-0">
+                -
+              </h5>
+            </div>
+
+            <hr>
+
+            <div class="d-flex justify-content-between align-items-center mb-3">
+
+              <h6 class="mb-0">
+                Input Component
+              </h6>
+
+              <span class="badge bg-primary"
+                id="detailTotalKomponen">
+                0 Component
+              </span>
+
+            </div>
+
+            <div class="table-responsive">
+
+              <table class="table table-bordered table-striped align-middle">
+
+                <thead class="table-light">
+                  <tr>
+                    <th width="60">No</th>
+                    <th>Nama Komponen</th>
+                    <th width="150" class="text-center">Status</th>
+                  </tr>
+                </thead>
+
+                <tbody id="detailKomponenBody">
+
+                  <tr>
+                    <td colspan="3" class="text-center text-muted">
+                      Belum ada data.
+                    </td>
+                  </tr>
+
+                </tbody>
+
+              </table>
+
+            </div>
+
+          </div>
+
+          <!-- Footer -->
+          <div class="modal-footer">
+
+            <button type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal">
+
+              <i class="bi bi-x-circle me-1"></i>
+              Tutup
+
+            </button>
+
+          </div>
+
+        </div>
+      </div>
+    </div>
 
     <!-- Modal Edit Komponen -->
     <div class="modal fade" id="editKomponenModal" tabindex="-1">
@@ -731,6 +884,129 @@ $result = $conn->query($sql);
       $(document).on('click', '.btnRemoveInput', function() {
         $(this).closest('.input-row').remove();
         updateMainKomponen();
+      });
+
+    });
+  </script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+
+      const detailModalElement = document.getElementById('modalDetailKomponen');
+
+      const detailModal = new bootstrap.Modal(detailModalElement);
+
+      const detailMainComponent = document.getElementById('detailMainComponent');
+      const detailTotalKomponen = document.getElementById('detailTotalKomponen');
+      const detailKomponenBody = document.getElementById('detailKomponenBody');
+
+
+      document.addEventListener('click', async function(event) {
+
+        const button = event.target.closest('.btnDetailKomponen');
+
+        if (!button) return;
+
+        const idGroup = button.dataset.idGroup;
+        const mainComponent = button.dataset.mainComponent;
+
+        detailMainComponent.textContent = mainComponent;
+        detailTotalKomponen.textContent = 'Loading...';
+
+        detailKomponenBody.innerHTML = `
+            <tr>
+                <td colspan="3" class="text-center">
+                    <div class="spinner-border spinner-border-sm text-primary"></div>
+                    Loading data...
+                </td>
+            </tr>
+        `;
+
+        detailModal.show();
+
+        try {
+
+          const response = await fetch(
+            `./../config/get_production_dashboard_component.php?id_group=${encodeURIComponent(idGroup)}`
+          );
+
+          if (!response.ok) {
+            throw new Error('Gagal mengambil data komponen.');
+          }
+
+          const result = await response.json();
+
+          const data = result.data || [];
+
+          detailKomponenBody.innerHTML = '';
+
+          detailTotalKomponen.textContent = `${data.length} Component`;
+
+          if (data.length === 0) {
+
+            detailKomponenBody.innerHTML = `
+                    <tr>
+                        <td colspan="3" class="text-center text-muted">
+                            Data komponen tidak ditemukan.
+                        </td>
+                    </tr>
+                `;
+
+            return;
+          }
+
+          data.forEach((item, index) => {
+
+            const tr = document.createElement('tr');
+
+            const tdNo = document.createElement('td');
+            tdNo.textContent = index + 1;
+
+            const tdName = document.createElement('td');
+            tdName.textContent = item.nama_komponen;
+
+            const tdStatus = document.createElement('td');
+            tdStatus.className = 'text-center';
+
+            const badge = document.createElement('span');
+
+            if (Number(item.is_main) === 1) {
+
+              badge.className = 'badge bg-success';
+              badge.textContent = 'Main';
+
+            } else {
+
+              badge.className = 'badge bg-secondary';
+              badge.textContent = 'Group';
+            }
+
+            tdStatus.appendChild(badge);
+
+            tr.appendChild(tdNo);
+            tr.appendChild(tdName);
+            tr.appendChild(tdStatus);
+
+            detailKomponenBody.appendChild(tr);
+
+          });
+
+        } catch (error) {
+
+          console.error(error);
+
+          detailTotalKomponen.textContent = 'Error';
+
+          detailKomponenBody.innerHTML = `
+                <tr>
+                    <td colspan="3" class="text-center text-danger">
+                        Gagal memuat data komponen.
+                    </td>
+                </tr>
+            `;
+
+        }
+
       });
 
     });
