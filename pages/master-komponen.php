@@ -239,15 +239,153 @@ $result = $conn->query($sql);
       </div>
     </div>
 
+    <!-- Modal Import Komponen -->
+    <div class="modal fade" id="modalImportKomponen" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <form action="./../config/preview-import-komponen.php"
+          method="POST"
+          enctype="multipart/form-data"
+          id="formImportKomponen">
+
+          <div class="modal-content">
+
+            <!-- Header -->
+            <div class="modal-header bg-success text-white">
+              <h5 class="modal-title d-flex align-items-center">
+                <i class="bi bi-file-earmark-excel me-2"></i>
+                Import Master Komponen
+              </h5>
+
+              <button type="button"
+                class="btn-close btn-close-white"
+                data-bs-dismiss="modal">
+              </button>
+            </div>
+
+            <!-- Body -->
+            <div class="modal-body">
+
+              <div class="alert alert-info">
+                <i class="bi bi-info-circle me-2"></i>
+                Gunakan template Excel yang telah disediakan
+                untuk memastikan format data sesuai dengan
+                kebutuhan sistem.
+              </div>
+
+              <!-- Download Template -->
+              <div class="border rounded p-3 mb-3">
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+
+                  <div>
+                    <div class="fw-bold">
+                      <i class="bi bi-file-earmark-excel text-success me-1"></i>
+                      Template Import Komponen
+                    </div>
+                    <small class="text-muted">
+                      Download template sebelum mengisi data.
+                    </small>
+                  </div>
+
+                  <a href="./../config/download-template-komponen.php"
+                    class="btn btn-outline-success btn-sm">
+                    <i class="bi bi-download me-1"></i>
+                    Download Template
+                  </a>
+
+                </div>
+              </div>
+
+              <!-- Upload File -->
+              <div class="mb-3">
+                <label for="fileImportKomponen" class="form-label fw-bold">
+                  Pilih File Excel
+                </label>
+
+                <input type="file"
+                  class="form-control"
+                  name="file_import_komponen"
+                  id="fileImportKomponen"
+                  accept=".xlsx"
+                  required>
+
+                <small class="text-muted">
+                  Format file yang didukung: .xlsx
+                </small>
+              </div>
+
+              <!-- Informasi -->
+              <div class="border rounded p-3">
+                <div class="fw-bold mb-2">
+                  <i class="bi bi-exclamation-triangle text-warning me-1"></i>
+                  Informasi Import
+                </div>
+
+                <ul class="mb-0 small">
+                  <li>Setiap Style harus dituliskan secara eksplisit.</li>
+                  <li>Vendor wajib diisi pada setiap baris.</li>
+                  <li>Model dan Style yang sudah terdaftar tidak dapat diimport ulang.</li>
+                  <li>Jika terdapat kesalahan validasi, data tidak akan disimpan.</li>
+                  <li>Pastikan data sudah sesuai dengan template.</li>
+                </ul>
+              </div>
+
+            </div>
+
+            <!-- Footer -->
+            <div class="modal-footer">
+              <button type="button"
+                class="btn btn-secondary"
+                data-bs-dismiss="modal">
+                <i class="bi bi-x-circle me-1"></i>
+                Batal
+              </button>
+
+              <button type="submit"
+                class="btn btn-success"
+                name="preview-import-komponen">
+                <i class="bi bi-search me-1"></i>
+                Preview Data
+              </button>
+            </div>
+
+          </div>
+        </form>
+      </div>
+    </div>
+
     <section class="section">
       <div class="row">
         <div class="col-lg-12">
           <div class="card">
             <div class="card-header text-black">
-              <div class="d-flex justify-content-between align-items-center w-100">
-                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modalAddKomponen">
+              <div class="d-flex justify-content-between align-items-center w-100 flex-wrap gap-2">
+
+                <!-- Add Manual -->
+                <button type="button" class="btn btn-primary"
+                  data-bs-toggle="modal"
+                  data-bs-target="#modalAddKomponen">
                   <i class="bi bi-plus-circle me-1"></i> Add
                 </button>
+
+                <!-- Excel Actions -->
+                <div class="d-flex gap-2">
+
+                  <!-- Download Template -->
+                  <a href="./../config/download-template-komponen.php"
+                    class="btn btn-outline-success">
+                    <i class="bi bi-file-earmark-excel me-1"></i>
+                    Download Template
+                  </a>
+
+                  <!-- Upload Excel -->
+                  <button type="button" class="btn btn-success"
+                    data-bs-toggle="modal"
+                    data-bs-target="#modalImportKomponen">
+                    <i class="bi bi-upload me-1"></i>
+                    Upload Excel
+                  </button>
+
+                </div>
               </div>
             </div>
 
