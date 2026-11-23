@@ -16,161 +16,754 @@ session_start(); // ready to go!
 $conn = mysqli_connect("localhost", "root", "", "db_isubcont");
 date_default_timezone_set('Asia/Jakarta');
 
+
 // REGISTER USERS
 if (isset($_POST['submit-user'])) {
     date_default_timezone_set('Asia/Jakarta');
 
-    // Ambil dan filter data
-    $updated_by = mysqli_real_escape_string($conn, $_POST['updated_by']);
-    $username   = mysqli_real_escape_string($conn, $_POST['username']);
-    $nik_user   = mysqli_real_escape_string($conn, $_POST['nik_user']);
-    $id_card = trim($_POST['id_card']);
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-    if ($id_card === '') {
-        $id_card = null;
-    } else {
-        $id_card = mysqli_real_escape_string($conn, $id_card);
-    }
-    $ncvs   = mysqli_real_escape_string($conn, $_POST['ncvs']);
-    $role_id  = mysqli_real_escape_string($conn, $_POST['role_id']);
-    $password   = mysqli_real_escape_string($conn, $_POST['password']);
-    $timestamp  = date('Y-m-d H:i:s');
+    $transactionStarted = false;
 
-    // Hash password
-    $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+    try {
+        // =====================================================
+        // 1. AMBIL DAN FILTER DATA
+        // =====================================================
 
-    // Cek apakah NIK sudah ada
-    $check_nik = mysqli_query($conn, "SELECT 1 FROM tbl_user WHERE nik_user = '$nik_user'");
-    if (mysqli_num_rows($check_nik) > 0) {
-        $_SESSION['red_notif'] = "NIK sudah terdaftar, mohon gunakan NIK lain.";
-        header("Location: /isubcont/pages/master-user.php");
-        exit();
-    }
+        $updated_by = mysqli_real_escape_string(
+            $conn,
+            $_POST['updated_by'] ?? ''
+        );
 
-    if (!empty($id_card)) {
+        $username = mysqli_real_escape_string(
+            $conn,
+            trim($_POST['username'] ?? '')
+        );
 
-        $check_id_card = mysqli_query($conn, "
-        SELECT 1
-        FROM tbl_user
-        WHERE id_card = '$id_card'
-    ");
+        $nik_user = mysqli_real_escape_string(
+            $conn,
+            trim($_POST['nik_user'] ?? '')
+        );
 
-        if (mysqli_num_rows($check_id_card) > 0) {
+        $id_card = trim($_POST['id_card'] ?? '');
 
-            $_SESSION['red_notif'] = "ID Card sudah terdaftar, mohon gunakan ID Card lain.";
-            header("Location: /isubcont/pages/master-user.php");
-            exit();
+        if ($id_card === '') {
+            $id_card = null;
+        } else {
+            $id_card = mysqli_real_escape_string($conn, $id_card);
         }
-    }
 
-    $id_card_sql = ($id_card === null)
-        ? "NULL"
-        : "'$id_card'";
+        $departement = mysqli_real_escape_string(
+            $conn,
+            $_POST['departement'] ?? ''
+        );
 
-    // Simpan ke tbl_user
-    $query_user = mysqli_query($conn, "INSERT INTO tbl_user 
-        (username, nik_user, id_card, ncvs, pass_user, pass_plain, role_id, is_deleted, updated_by, timestamp) 
-        VALUES 
-        ('$username', '$nik_user', $id_card_sql, '$ncvs', '$hashed_password', '$password', '$role_id', '0', '$updated_by', '$timestamp')");
+        $level = mysqli_real_escape_string(
+            $conn,
+            $_POST['level'] ?? ''
+        );
 
-    if ($query_user) {
+        $role_id = mysqli_real_escape_string(
+            $conn,
+            $_POST['role_id'] ?? ''
+        );
+
+        $password = $_POST['password'] ?? '';
+
+        $timestamp = date('Y-m-d H:i:s');
+
+        // =====================================================
+        // 2. VALIDASI MULTI NCVS
+        // =====================================================
+
+        $selectedNcvs = $_POST['ncvs'] ?? [];
+
+        if (!is_array($selectedNcvs) || empty($selectedNcvs)) {
+            throw new RuntimeException(
+                'Pilih minimal satu NCVS.'
+            );
+        }
+
+        $selectedNcvs = array_values(array_unique(
+            array_filter(
+                array_map('trim', $selectedNcvs),
+                function ($value) {
+                    return $value !== '';
+                }
+            )
+        ));
+
+        if (empty($selectedNcvs)) {
+            throw new RuntimeException(
+                'Data NCVS tidak valid.'
+            );
+        }
+
+        // NCVS pertama digunakan sebagai legacy tbl_user.ncvs.
+        $ncvsLegacy = mysqli_real_escape_string(
+            $conn,
+            $selectedNcvs[0]
+        );
+
+        // =====================================================
+        // 3. HASH PASSWORD
+        // =====================================================
+
+        $hashed_password = password_hash(
+            $password,
+            PASSWORD_DEFAULT
+        );
+
+        if ($hashed_password === false) {
+            throw new RuntimeException(
+                'Gagal memproses password user.'
+            );
+        }
+
+        // =====================================================
+        // 4. CEK DUPLIKASI NIK
+        // =====================================================
+
+        $check_nik = mysqli_query(
+            $conn,
+            "SELECT 1
+             FROM tbl_user
+             WHERE nik_user = '$nik_user'
+             LIMIT 1"
+        );
+
+        if (mysqli_num_rows($check_nik) > 0) {
+            throw new RuntimeException(
+                'NIK sudah terdaftar, mohon gunakan NIK lain.'
+            );
+        }
+
+        // =====================================================
+        // 5. CEK DUPLIKASI ID CARD
+        // =====================================================
+
+        if ($id_card !== null) {
+            $check_id_card = mysqli_query(
+                $conn,
+                "SELECT 1
+                 FROM tbl_user
+                 WHERE id_card = '$id_card'
+                 LIMIT 1"
+            );
+
+            if (mysqli_num_rows($check_id_card) > 0) {
+                throw new RuntimeException(
+                    'ID Card sudah terdaftar, mohon gunakan ID Card lain.'
+                );
+            }
+        }
+
+        $id_card_sql = ($id_card === null)
+            ? "NULL"
+            : "'$id_card'";
+
+        // =====================================================
+        // 6. MULAI DATABASE TRANSACTION
+        // =====================================================
+
+        mysqli_begin_transaction($conn);
+        $transactionStarted = true;
+
+        // =====================================================
+        // 7. SIMPAN DATA UTAMA USER
+        // =====================================================
+
+        $query_user = mysqli_query(
+            $conn,
+            "INSERT INTO tbl_user (
+                username,
+                nik_user,
+                id_card,
+                ncvs,
+                departement,
+                level,
+                pass_user,
+                pass_plain,
+                role_id,
+                is_deleted,
+                updated_by,
+                timestamp
+            ) VALUES (
+                '$username',
+                '$nik_user',
+                $id_card_sql,
+                '$ncvsLegacy',
+                '$departement',
+                '$level',
+                '$hashed_password',
+                '$password',
+                '$role_id',
+                '0',
+                '$updated_by',
+                '$timestamp'
+            )"
+        );
+
+        if (!$query_user) {
+            throw new RuntimeException(
+                'User tidak berhasil didaftarkan.'
+            );
+        }
+
         $last_user_id = mysqli_insert_id($conn);
 
-        // Siapkan log (hanya simpan data baru)
+        // =====================================================
+        // 8. SIMPAN RELASI NCVS
+        // =====================================================
+
+        $ncvsStmt = mysqli_prepare(
+            $conn,
+            "INSERT INTO tbl_user_ncvs (
+                id_user,
+                ncvs
+            ) VALUES (?, ?)"
+        );
+
+        foreach ($selectedNcvs as $selectedNcvsValue) {
+            mysqli_stmt_bind_param(
+                $ncvsStmt,
+                'is',
+                $last_user_id,
+                $selectedNcvsValue
+            );
+
+            mysqli_stmt_execute($ncvsStmt);
+        }
+
+        mysqli_stmt_close($ncvsStmt);
+
+        // =====================================================
+        // 9. COMMIT DATA USER DAN RELASI NCVS
+        // =====================================================
+
+        mysqli_commit($conn);
+        $transactionStarted = false;
+
+        // =====================================================
+        // 10. SIMPAN LOG
+        // =====================================================
+
         $new_data = [
             "username" => $username,
             "nik_user" => $nik_user,
             "id_card" => $id_card,
-            "ncvs" => $ncvs,
+            "ncvs" => $selectedNcvs,
+            "ncvs_legacy" => $ncvsLegacy,
+            "departement" => $departement,
+            "level" => $level,
             "role_id" => $role_id
         ];
-        $new_data_json = mysqli_real_escape_string($conn, json_encode($new_data));
 
-        $query_log = mysqli_query($conn, "INSERT INTO tlog_user 
-            (id_user, updated_by, action_type, old_data, new_data, created_at, updated_at) 
-            VALUES 
-            ('$last_user_id', '$updated_by', 'INSERT', NULL, '$new_data_json', NOW(), NOW())");
+        $new_data_json = mysqli_real_escape_string(
+            $conn,
+            json_encode($new_data, JSON_UNESCAPED_UNICODE)
+        );
+
+        $query_log = mysqli_query(
+            $conn,
+            "INSERT INTO tlog_user (
+                id_user,
+                updated_by,
+                action_type,
+                old_data,
+                new_data,
+                created_at,
+                updated_at
+            ) VALUES (
+                '$last_user_id',
+                '$updated_by',
+                'INSERT',
+                NULL,
+                '$new_data_json',
+                NOW(),
+                NOW()
+            )"
+        );
 
         if ($query_log) {
-            $_SESSION['green_notif'] = "User berhasil didaftarkan.";
+            $_SESSION['green_notif'] =
+                "User berhasil didaftarkan.";
         } else {
-            $_SESSION['red_notif'] = "User berhasil didaftarkan, tapi log gagal.";
+            $_SESSION['red_notif'] =
+                "User berhasil didaftarkan, tapi log gagal.";
+        }
+    } catch (Throwable $e) {
+        if ($transactionStarted) {
+            mysqli_rollback($conn);
         }
 
-        header("Location: /isubcont/pages/master-user.php");
-        exit();
-    } else {
-        $_SESSION['red_notif'] = "User tidak berhasil didaftarkan.";
-        header("Location: /isubcont/pages/master-user.php");
-        exit();
+        error_log(
+            'REGISTER USERS error: ' . $e->getMessage()
+        );
+
+        $_SESSION['red_notif'] = $e instanceof RuntimeException
+            ? $e->getMessage()
+            : 'User tidak berhasil didaftarkan.';
     }
+
+    header("Location: /isubcont/pages/master-user.php");
+    exit();
 }
+
 
 // UPDATE USERS
 if (isset($_POST['update-user'])) {
     date_default_timezone_set('Asia/Jakarta');
 
-    // Ambil dan filter data
-    $id_user    = mysqli_real_escape_string($conn, $_POST['id_user']);
-    $updated_by = mysqli_real_escape_string($conn, $_POST['updated_by']);
-    $username   = mysqli_real_escape_string($conn, $_POST['username']);
-    $nik_user   = mysqli_real_escape_string($conn, $_POST['nik_user']);
-    $role_id  = mysqli_real_escape_string($conn, $_POST['role_id']);
-    $password   = mysqli_real_escape_string($conn, $_POST['password']);
-    $timestamp  = date('Y-m-d H:i:s');
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-    // Ambil data lama untuk logging
-    $old_query = mysqli_query($conn, "SELECT username, nik_user, role_id FROM tbl_user WHERE id_user = '$id_user'");
-    $old_data = mysqli_fetch_assoc($old_query);
-    $old_data_json = mysqli_real_escape_string($conn, json_encode($old_data));
+    $transactionStarted = false;
 
-    // Siapkan SQL update
-    if (!empty($password)) {
-        // Jika password diubah
-        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-        $update_sql = "UPDATE tbl_user 
-                       SET username='$username', nik_user='$nik_user', role_id='$role_id', 
-                           pass_user='$hashed_password', pass_plain='$password',
-                           updated_by='$updated_by', timestamp='$timestamp'
-                       WHERE id_user='$id_user'";
-    } else {
-        // Jika password tidak diubah
-        $update_sql = "UPDATE tbl_user 
-                       SET username='$username', nik_user='$nik_user', role_id='$role_id',
-                           updated_by='$updated_by', timestamp='$timestamp'
-                       WHERE id_user='$id_user'";
-    }
+    try {
+        // =====================================================
+        // 1. AMBIL DAN FILTER DATA
+        // =====================================================
 
-    $query_update = mysqli_query($conn, $update_sql);
+        $id_user    = (int) ($_POST['id_user'] ?? 0);
+        $updated_by = trim($_POST['updated_by'] ?? '');
+        $username   = trim($_POST['username'] ?? '');
+        $nik_user   = trim($_POST['nik_user'] ?? '');
+        $id_card    = trim($_POST['id_card'] ?? '');
+        $departement = trim($_POST['departement'] ?? '');
+        $level      = trim($_POST['level'] ?? '');
+        $role_id    = (int) ($_POST['role_id'] ?? 0);
+        $password   = $_POST['password'] ?? '';
 
-    if ($query_update) {
-        // Siapkan data baru untuk logging
-        $new_data = [
-            "username"  => $username,
-            "nik_user"  => $nik_user,
-            "role_id" => $role_id
-        ];
-        $new_data_json = mysqli_real_escape_string($conn, json_encode($new_data));
+        $timestamp = date('Y-m-d H:i:s');
 
-        // Insert log
-        $query_log = mysqli_query($conn, "INSERT INTO tlog_user 
-            (id_user, updated_by, action_type, old_data, new_data, created_at, updated_at) 
-            VALUES 
-            ('$id_user', '$updated_by', 'UPDATE', '$old_data_json', '$new_data_json', NOW(), NOW())");
-
-        if ($query_log) {
-            $_SESSION['green_notif'] = "Data user berhasil diperbarui.";
-        } else {
-            $_SESSION['red_notif'] = "User berhasil diupdate, tapi log gagal.";
+        // Validasi data wajib
+        if (
+            $id_user <= 0 ||
+            $username === '' ||
+            $nik_user === '' ||
+            $role_id <= 0
+        ) {
+            throw new RuntimeException(
+                'Data user belum lengkap.'
+            );
         }
 
-        header("Location: /isubcont/pages/master-user.php");
-        exit;
-    } else {
-        $_SESSION['red_notif'] = "User tidak berhasil diupdate.";
-        header("Location: /isubcont/pages/master-user.php");
-        exit();
+        // ID Card kosong disimpan sebagai NULL
+        if ($id_card === '') {
+            $id_card = null;
+        }
+
+        // =====================================================
+        // 2. VALIDASI MULTI NCVS
+        // =====================================================
+
+        $selectedNcvs = $_POST['ncvs'] ?? [];
+
+        if (!is_array($selectedNcvs) || empty($selectedNcvs)) {
+            throw new RuntimeException(
+                'Pilih minimal satu NCVS.'
+            );
+        }
+
+        $selectedNcvs = array_values(array_unique(
+            array_filter(
+                array_map('trim', $selectedNcvs),
+                function ($value) {
+                    return $value !== '';
+                }
+            )
+        ));
+
+        if (empty($selectedNcvs)) {
+            throw new RuntimeException(
+                'Data NCVS tidak valid.'
+            );
+        }
+
+        // NCVS pertama untuk kompatibilitas sistem lama
+        $ncvsLegacy = $selectedNcvs[0];
+
+        // =====================================================
+        // 3. MULAI DATABASE TRANSACTION
+        // =====================================================
+
+        mysqli_begin_transaction($conn);
+        $transactionStarted = true;
+
+        // =====================================================
+        // 4. AMBIL DATA LAMA USER
+        // =====================================================
+
+        $stmt_old = mysqli_prepare(
+            $conn,
+            "SELECT
+                id_user,
+                username,
+                nik_user,
+                id_card,
+                ncvs,
+                departement,
+                level,
+                role_id
+             FROM tbl_user
+             WHERE id_user = ?
+             LIMIT 1"
+        );
+
+        mysqli_stmt_bind_param(
+            $stmt_old,
+            'i',
+            $id_user
+        );
+
+        mysqli_stmt_execute($stmt_old);
+
+        $result_old = mysqli_stmt_get_result($stmt_old);
+        $old_data = mysqli_fetch_assoc($result_old);
+
+        mysqli_stmt_close($stmt_old);
+
+        if (!$old_data) {
+            throw new RuntimeException(
+                'Data user tidak ditemukan.'
+            );
+        }
+
+        // =====================================================
+        // 5. AMBIL RELASI NCVS LAMA
+        // =====================================================
+
+        $stmt_old_ncvs = mysqli_prepare(
+            $conn,
+            "SELECT ncvs
+             FROM tbl_user_ncvs
+             WHERE id_user = ?
+             ORDER BY id ASC"
+        );
+
+        mysqli_stmt_bind_param(
+            $stmt_old_ncvs,
+            'i',
+            $id_user
+        );
+
+        mysqli_stmt_execute($stmt_old_ncvs);
+
+        $result_old_ncvs = mysqli_stmt_get_result(
+            $stmt_old_ncvs
+        );
+
+        $oldNcvsList = [];
+
+        while ($rowNcvs = mysqli_fetch_assoc($result_old_ncvs)) {
+            $oldNcvsList[] = $rowNcvs['ncvs'];
+        }
+
+        mysqli_stmt_close($stmt_old_ncvs);
+
+        // Fallback untuk user lama tanpa relasi NCVS
+        if (empty($oldNcvsList) && !empty($old_data['ncvs'])) {
+            $oldNcvsList[] = $old_data['ncvs'];
+        }
+
+        // =====================================================
+        // 6. CEK DUPLIKASI NIK
+        // =====================================================
+
+        $stmt_nik = mysqli_prepare(
+            $conn,
+            "SELECT id_user
+             FROM tbl_user
+             WHERE nik_user = ?
+             AND id_user <> ?
+             LIMIT 1"
+        );
+
+        mysqli_stmt_bind_param(
+            $stmt_nik,
+            'si',
+            $nik_user,
+            $id_user
+        );
+
+        mysqli_stmt_execute($stmt_nik);
+
+        $result_nik = mysqli_stmt_get_result($stmt_nik);
+
+        if (mysqli_num_rows($result_nik) > 0) {
+            mysqli_stmt_close($stmt_nik);
+
+            throw new RuntimeException(
+                'NIK sudah digunakan oleh user lain.'
+            );
+        }
+
+        mysqli_stmt_close($stmt_nik);
+
+        // =====================================================
+        // 7. CEK DUPLIKASI ID CARD
+        // =====================================================
+
+        if ($id_card !== null) {
+
+            $stmt_id_card = mysqli_prepare(
+                $conn,
+                "SELECT id_user
+                 FROM tbl_user
+                 WHERE id_card = ?
+                 AND id_user <> ?
+                 LIMIT 1"
+            );
+
+            mysqli_stmt_bind_param(
+                $stmt_id_card,
+                'si',
+                $id_card,
+                $id_user
+            );
+
+            mysqli_stmt_execute($stmt_id_card);
+
+            $result_id_card = mysqli_stmt_get_result(
+                $stmt_id_card
+            );
+
+            if (mysqli_num_rows($result_id_card) > 0) {
+                mysqli_stmt_close($stmt_id_card);
+
+                throw new RuntimeException(
+                    'ID Card sudah digunakan oleh user lain.'
+                );
+            }
+
+            mysqli_stmt_close($stmt_id_card);
+        }
+
+        // =====================================================
+        // 8. UPDATE DATA UTAMA USER
+        // =====================================================
+
+        if ($password !== '') {
+
+            $hashed_password = password_hash(
+                $password,
+                PASSWORD_DEFAULT
+            );
+
+            if ($hashed_password === false) {
+                throw new RuntimeException(
+                    'Gagal memproses password baru.'
+                );
+            }
+
+            $stmt_update = mysqli_prepare(
+                $conn,
+                "UPDATE tbl_user
+                 SET
+                    username = ?,
+                    nik_user = ?,
+                    id_card = ?,
+                    ncvs = ?,
+                    departement = ?,
+                    level = ?,
+                    role_id = ?,
+                    pass_user = ?,
+                    pass_plain = ?,
+                    updated_by = ?,
+                    timestamp = ?
+                 WHERE id_user = ?"
+            );
+
+            mysqli_stmt_bind_param(
+                $stmt_update,
+                'ssssssissssi',
+                $username,
+                $nik_user,
+                $id_card,
+                $ncvsLegacy,
+                $departement,
+                $level,
+                $role_id,
+                $hashed_password,
+                $password,
+                $updated_by,
+                $timestamp,
+                $id_user
+            );
+        } else {
+
+            $stmt_update = mysqli_prepare(
+                $conn,
+                "UPDATE tbl_user
+                 SET
+                    username = ?,
+                    nik_user = ?,
+                    id_card = ?,
+                    ncvs = ?,
+                    departement = ?,
+                    level = ?,
+                    role_id = ?,
+                    updated_by = ?,
+                    timestamp = ?
+                 WHERE id_user = ?"
+            );
+
+            mysqli_stmt_bind_param(
+                $stmt_update,
+                'ssssssissi',
+                $username,
+                $nik_user,
+                $id_card,
+                $ncvsLegacy,
+                $departement,
+                $level,
+                $role_id,
+                $updated_by,
+                $timestamp,
+                $id_user
+            );
+        }
+
+        mysqli_stmt_execute($stmt_update);
+        mysqli_stmt_close($stmt_update);
+
+        // =====================================================
+        // 9. SINKRONISASI RELASI NCVS
+        // =====================================================
+
+        // Hapus seluruh relasi NCVS lama
+        $stmt_delete_ncvs = mysqli_prepare(
+            $conn,
+            "DELETE FROM tbl_user_ncvs
+             WHERE id_user = ?"
+        );
+
+        mysqli_stmt_bind_param(
+            $stmt_delete_ncvs,
+            'i',
+            $id_user
+        );
+
+        mysqli_stmt_execute($stmt_delete_ncvs);
+        mysqli_stmt_close($stmt_delete_ncvs);
+
+        // Masukkan seluruh NCVS terbaru
+        $stmt_insert_ncvs = mysqli_prepare(
+            $conn,
+            "INSERT INTO tbl_user_ncvs (
+                id_user,
+                ncvs
+            ) VALUES (?, ?)"
+        );
+
+        foreach ($selectedNcvs as $ncvsValue) {
+
+            mysqli_stmt_bind_param(
+                $stmt_insert_ncvs,
+                'is',
+                $id_user,
+                $ncvsValue
+            );
+
+            mysqli_stmt_execute($stmt_insert_ncvs);
+        }
+
+        mysqli_stmt_close($stmt_insert_ncvs);
+
+        // =====================================================
+        // 10. SIAPKAN DATA LOG
+        // =====================================================
+
+        $old_data['ncvs'] = $oldNcvsList;
+
+        $new_data = [
+            "username" => $username,
+            "nik_user" => $nik_user,
+            "id_card" => $id_card,
+            "ncvs" => $selectedNcvs,
+            "ncvs_legacy" => $ncvsLegacy,
+            "departement" => $departement,
+            "level" => $level,
+            "role_id" => $role_id
+        ];
+
+        $old_data_json = json_encode(
+            $old_data,
+            JSON_UNESCAPED_UNICODE
+        );
+
+        $new_data_json = json_encode(
+            $new_data,
+            JSON_UNESCAPED_UNICODE
+        );
+
+        // =====================================================
+        // 11. COMMIT TRANSACTION
+        // =====================================================
+
+        mysqli_commit($conn);
+        $transactionStarted = false;
+
+        // =====================================================
+        // 12. INSERT LOG
+        // =====================================================
+
+        try {
+
+            $stmt_log = mysqli_prepare(
+                $conn,
+                "INSERT INTO tlog_user (
+                    id_user,
+                    updated_by,
+                    action_type,
+                    old_data,
+                    new_data,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, 'UPDATE', ?, ?, NOW(), NOW())"
+            );
+
+            mysqli_stmt_bind_param(
+                $stmt_log,
+                'isss',
+                $id_user,
+                $updated_by,
+                $old_data_json,
+                $new_data_json
+            );
+
+            mysqli_stmt_execute($stmt_log);
+            mysqli_stmt_close($stmt_log);
+
+            $_SESSION['green_notif'] =
+                "Data user berhasil diperbarui.";
+        } catch (Throwable $logError) {
+
+            error_log(
+                'UPDATE USERS LOG error: ' .
+                    $logError->getMessage()
+            );
+
+            $_SESSION['red_notif'] =
+                "Data user berhasil diperbarui, tapi log gagal.";
+        }
+    } catch (Throwable $e) {
+
+        if ($transactionStarted) {
+            mysqli_rollback($conn);
+        }
+
+        error_log(
+            'UPDATE USERS error: ' . $e->getMessage()
+        );
+
+        $_SESSION['red_notif'] = $e instanceof RuntimeException
+            ? $e->getMessage()
+            : 'Data user tidak berhasil diperbarui.';
     }
+
+    header("Location: /isubcont/pages/master-user.php");
+    exit();
 }
 
 // REMOVE data user

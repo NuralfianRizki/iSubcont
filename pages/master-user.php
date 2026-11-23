@@ -7,11 +7,18 @@ checkAuth('master_user'); // cek apakah sudah login dan punya akses ke menu ini
 $nik = $_SESSION['nik_user'];
 $username = $_SESSION['username'];
 
-$users = mysqli_query($conn, "SELECT u.* , r.role_name
-FROM tbl_user u
-JOIN roles r ON u.role_id = r.id
-WHERE u.is_deleted = '0'
-ORDER BY timestamp DESC;");
+$users = mysqli_query($conn, "
+    SELECT
+        u.*,
+        r.role_name,
+        GROUP_CONCAT(DISTINCT un.ncvs ORDER BY un.ncvs ASC) AS ncvs_list
+    FROM tbl_user u
+    JOIN roles r ON u.role_id = r.id
+    LEFT JOIN tbl_user_ncvs un ON u.id_user = un.id_user
+    WHERE u.is_deleted = '0'
+    GROUP BY u.id_user
+    ORDER BY u.timestamp DESC
+");
 
 // ambil semua role
 $sql_roles = "SELECT id, role_name FROM roles WHERE is_deleted = '0' ORDER BY role_name ASC";
@@ -58,6 +65,109 @@ if ($result_ncvs->num_rows > 0) {
     100% {
       width: 0%;
     }
+  }
+
+
+  /* Select2 container */
+  #tambahUserModal .select2-container,
+  #editUserModal .select2-container {
+    width: 100% !important;
+  }
+
+  /* Input area */
+  #tambahUserModal .select2-selection--multiple,
+  #editUserModal .select2-selection--multiple {
+    min-height: 42px;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    background-color: #fff;
+    padding: 4px 8px;
+    cursor: text;
+  }
+
+  /* Selected items / Chip NCVS */
+  #tambahUserModal .select2-selection__choice,
+  #editUserModal .select2-selection__choice {
+    position: relative;
+    padding: 4px 25px 4px 8px !important;
+    margin: 3px 5px 3px 0 !important;
+    border: 1px solid #c6dcff !important;
+    border-radius: 5px !important;
+    background-color: #eaf2ff !important;
+    color: #0d47a1 !important;
+    font-size: 14px;
+  }
+
+  /* Tombol X di sebelah kanan */
+  #tambahUserModal .select2-selection__choice__remove,
+  #editUserModal .select2-selection__choice__remove {
+    position: absolute !important;
+    top: 0 !important;
+    right: 0 !important;
+    left: auto !important;
+    width: 22px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    border-left: 1px solid #c6dcff !important;
+    border-radius: 0 4px 4px 0 !important;
+    color: #0d47a1 !important;
+    font-size: 15px;
+  }
+
+  /* Hover tombol X */
+  #tambahUserModal .select2-selection__choice__remove:hover,
+  #editUserModal .select2-selection__choice__remove:hover {
+    background-color: #d6e7ff !important;
+    color: #dc3545 !important;
+  }
+
+  /* Search input */
+  #tambahUserModal .select2-search__field,
+  #editUserModal .select2-search__field {
+    margin-top: 5px;
+    font-size: 14px;
+  }
+
+  /* Dropdown */
+  #tambahUserModal .select2-dropdown,
+  #editUserModal .select2-dropdown {
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Dropdown options */
+  #tambahUserModal .select2-results__option,
+  #editUserModal .select2-results__option {
+    padding: 9px 12px;
+    font-size: 14px;
+  }
+
+  /* Hover option */
+  #tambahUserModal .select2-results__option--highlighted[aria-selected],
+  #editUserModal .select2-results__option--highlighted[aria-selected] {
+    background-color: #0d6efd;
+    color: #fff;
+  }
+
+  /* Selected option */
+  #tambahUserModal .select2-results__option[aria-selected="true"],
+  #editUserModal .select2-results__option[aria-selected="true"] {
+    background-color: #eaf2ff;
+    color: #0d47a1;
+  }
+
+  /* Dropdown scroll */
+  #tambahUserModal .select2-results__options,
+  #editUserModal .select2-results__options {
+    max-height: 200px;
+    overflow-y: auto;
   }
 </style>
 
@@ -127,69 +237,182 @@ if ($result_ncvs->num_rows > 0) {
     </div>
 
     <!-- Modal Tambah User -->
-    <div class="modal fade" id="tambahUserModal" tabindex="-1" aria-labelledby="tambahUserModalLabel" aria-hidden="true">
+    <div class="modal fade" id="tambahUserModal" tabindex="-1"
+      aria-labelledby="tambahUserModalLabel" aria-hidden="true">
+
       <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content shadow-lg border-0 rounded-3">
 
-          <!-- Header -->
           <div class="modal-header bg-primary text-white">
-            <h5 class="modal-title d-flex align-items-center" id="tambahUserModalLabel">
-              <i class="bi bi-person-plus me-2"></i> Tambah Data User
+            <h5 class="modal-title d-flex align-items-center"
+              id="tambahUserModalLabel">
+              <i class="bi bi-person-plus me-2"></i>
+              Tambah Data User
             </h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+
+            <button type="button"
+              class="btn-close btn-close-white"
+              data-bs-dismiss="modal"
+              aria-label="Close">
+            </button>
           </div>
 
-          <!-- Form -->
           <form action="./../config/function.php" method="POST">
             <div class="modal-body">
+
               <div class="row g-3">
-                <input type="hidden" name="updated_by" id="updated_by" class="form-control" value="<?= htmlspecialchars($username) ?>" readonly>
+
+                <input type="hidden"
+                  name="updated_by"
+                  value="<?= htmlspecialchars($username) ?>">
+
+                <!-- Username -->
                 <div class="col-md-6">
-                  <label for="username" class="form-label">Username</label>
-                  <input type="text" name="username" id="username" class="form-control" placeholder="Input username" required>
-                </div>
-                <div class="col-md-6">
-                  <label for="nik_user" class="form-label">NIK</label>
-                  <input type="text" name="nik_user" id="nik_user" class="form-control" placeholder="Input NIK" required>
-                </div>
-                <div class="col-md-6">
-                  <label for="id_card" class="form-label">ID Card</label>
-                  <input type="password" name="id_card" id="id_card" class="form-control" placeholder="Input ID Card">
+                  <label for="username" class="form-label">
+                    Username
+                  </label>
+                  <input type="text"
+                    name="username"
+                    id="username"
+                    class="form-control"
+                    placeholder="Input username"
+                    required>
                 </div>
 
+                <!-- NIK -->
                 <div class="col-md-6">
-                  <label for="ncvs" class="form-label">NCVS</label>
-                  <select name="ncvs" id="ncvs" class="form-select">
-                    <option value="">Pilih ncvs</option>
-                    <?php foreach ($ncvs as $ncvs2): ?>
-                      <option value="<?= $ncvs2['ncvs'] ?>"><?= htmlspecialchars($ncvs2['ncvs']) ?></option>
-                    <?php endforeach; ?>
+                  <label for="nik_user" class="form-label">
+                    NIK
+                  </label>
+                  <input type="text"
+                    name="nik_user"
+                    id="nik_user"
+                    class="form-control"
+                    placeholder="Input NIK"
+                    required>
+                </div>
+
+                <!-- ID Card -->
+                <div class="col-md-6">
+                  <label for="id_card" class="form-label">
+                    ID Card
+                  </label>
+                  <input type="password"
+                    name="id_card"
+                    id="id_card"
+                    class="form-control"
+                    placeholder="Input ID Card">
+                </div>
+
+                <!-- Departement -->
+                <div class="col-md-6">
+                  <label for="departement" class="form-label">
+                    Departement
+                  </label>
+
+                  <select name="departement"
+                    id="departement"
+                    class="form-select"
+                    required>
+                    <option value="">Pilih departement</option>
+                    <option value="Production">Production</option>
+                    <option value="PPIC">PPIC</option>
+                    <option value="Quality">Quality</option>
                   </select>
                 </div>
+
+                <!-- Level -->
                 <div class="col-md-6">
-                  <label for="role_id" class="form-label">Role</label>
-                  <select name="role_id" id="role_id" class="form-select" required>
+                  <label for="level" class="form-label">
+                    Level
+                  </label>
+
+                  <select name="level"
+                    id="level"
+                    class="form-select"
+                    required>
+
+                    <option value="">Pilih level</option>
+                    <option value="Team Member">Team Member</option>
+                    <option value="Team Leader">Team Leader</option>
+                    <option value="Supervisor">Supervisor</option>
+                    <option value="Manager">Manager</option>
+                  </select>
+                </div>
+
+                <!-- Role -->
+                <div class="col-md-6">
+                  <label for="role_id" class="form-label">
+                    Role
+                  </label>
+
+                  <select name="role_id"
+                    id="role_id"
+                    class="form-select"
+                    required>
+
                     <option value="">Pilih role</option>
+
                     <?php foreach ($roles as $role): ?>
-                      <option value="<?= $role['id'] ?>"><?= htmlspecialchars($role['role_name']) ?></option>
+                      <option value="<?= htmlspecialchars($role['id']) ?>">
+                        <?= htmlspecialchars($role['role_name']) ?>
+                      </option>
                     <?php endforeach; ?>
+
                   </select>
                 </div>
 
-                <div class="col-md-6">
-                  <label for="password" class="form-label">Password</label>
-                  <input type="password" name="password" id="password" class="form-control" placeholder="Input password" required>
+                <!-- Multi Select NCVS -->
+                <div class="col-md-12">
+                  <label for="ncvs" class="form-label">
+                    NCVS
+                  </label>
+
+                  <select name="ncvs[]"
+                    id="ncvs"
+                    class="form-select select2-ncvs"
+                    multiple
+                    required>
+
+                    <?php foreach ($ncvs as $ncvs2): ?>
+                      <option value="<?= htmlspecialchars($ncvs2['ncvs']) ?>">
+                        <?= htmlspecialchars($ncvs2['ncvs']) ?>
+                      </option>
+                    <?php endforeach; ?>
+
+                  </select>
                 </div>
+
+                <!-- Password -->
+                <div class="col-md-12">
+                  <label for="password" class="form-label">
+                    Password
+                  </label>
+
+                  <input type="password"
+                    name="password"
+                    id="password"
+                    class="form-control"
+                    placeholder="Input password"
+                    required>
+                </div>
+
               </div>
             </div>
 
-            <!-- Footer -->
             <div class="modal-footer">
-              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
-                <i class="bi bi-x-circle me-1"></i> Batal
+              <button type="button"
+                class="btn btn-secondary"
+                data-bs-dismiss="modal">
+                <i class="bi bi-x-circle me-1"></i>
+                Batal
               </button>
-              <button type="submit" class="btn btn-success" name="submit-user">
-                <i class="bi bi-check-circle me-1"></i> Simpan
+
+              <button type="submit"
+                class="btn btn-success"
+                name="submit-user">
+                <i class="bi bi-check-circle me-1"></i>
+                Simpan
               </button>
             </div>
           </form>
@@ -256,12 +479,14 @@ if ($result_ncvs->num_rows > 0) {
                                   href="#"
                                   data-bs-toggle="modal"
                                   data-bs-target="#editUserModal"
-                                  data-id="<?= $row['id_user']; ?>"
-                                  data-username="<?= $row['username']; ?>"
-                                  data-nik="<?= $row['nik_user']; ?>"
-                                  data-role_id="<?= $row['role_id']; ?>"
-                                  data-id_card="<?= $row['id_card']; ?>"
-                                  data-ncvs="<?= $row['ncvs']; ?>">
+                                  data-id="<?= htmlspecialchars($row['id_user']); ?>"
+                                  data-username="<?= htmlspecialchars($row['username']); ?>"
+                                  data-nik="<?= htmlspecialchars($row['nik_user']); ?>"
+                                  data-role_id="<?= htmlspecialchars($row['role_id']); ?>"
+                                  data-id_card="<?= htmlspecialchars($row['id_card'] ?? ''); ?>"
+                                  data-departement="<?= htmlspecialchars($row['departement'] ?? ''); ?>"
+                                  data-level="<?= htmlspecialchars($row['level'] ?? ''); ?>"
+                                  data-ncvs-list="<?= htmlspecialchars($row['ncvs_list'] ?: $row['ncvs']); ?>">
                                   <i class="bi bi-pencil me-2"></i> Edit
                                 </a>
                                 <form action="./../config/function.php" method="post" onsubmit="return confirm('Yakin ingin hapus user ini?');">
@@ -289,67 +514,187 @@ if ($result_ncvs->num_rows > 0) {
     </section>
 
     <!-- Modal Edit User -->
-    <div class="modal fade" id="editUserModal" tabindex="-1" aria-labelledby="editUserModalLabel" aria-hidden="true">
+    <div class="modal fade" id="editUserModal" tabindex="-1"
+      aria-labelledby="editUserModalLabel" aria-hidden="true">
+
       <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content shadow-lg border-0 rounded-3">
 
           <!-- Header -->
-          <div class="modal-header text-black" style="background-color: DDDAD0;">
+          <div class="modal-header text-black" style="background-color: #DDDAD0;">
             <h5 class="modal-title d-flex align-items-center" id="editUserModalLabel">
               <i class="bi bi-people me-2"></i> Edit Data User
             </h5>
-            <button type="button" class="btn-close btn-close-black" data-bs-dismiss="modal" aria-label="Close"></button>
+
+            <button type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"></button>
           </div>
 
           <!-- Form -->
           <form action="./../config/function.php" method="POST">
+
             <div class="modal-body">
               <div class="row g-3">
+
+                <!-- Hidden Fields -->
                 <input type="hidden" name="id_user" id="edit_id_user">
-                <input type="hidden" name="updated_by" id="updated_by" value="<?= htmlspecialchars($username) ?>">
+                <input type="hidden" name="updated_by"
+                  value="<?= htmlspecialchars($username); ?>">
 
+                <!-- Username -->
                 <div class="col-md-6">
-                  <label for="username" class="form-label">Username</label>
-                  <input type="text" name="username" id="edit_username" class="form-control">
+                  <label for="edit_username" class="form-label">
+                    Username
+                  </label>
+                  <input type="text"
+                    name="username"
+                    id="edit_username"
+                    class="form-control"
+                    required>
                 </div>
 
+                <!-- NIK -->
                 <div class="col-md-6">
-                  <label for="nik_user" class="form-label">NIK</label>
-                  <input type="text" name="nik_user" id="edit_nik_user" class="form-control">
+                  <label for="edit_nik_user" class="form-label">
+                    NIK
+                  </label>
+                  <input type="text"
+                    name="nik_user"
+                    id="edit_nik_user"
+                    class="form-control"
+                    required>
                 </div>
 
+                <!-- ID Card -->
                 <div class="col-md-6">
-                  <label for="role_id" class="form-label">Role</label>
-                  <select name="role_id" id="edit_role_id" class="form-select" required>
-                    <option value="">Pilih role</option>
+                  <label for="edit_id_card" class="form-label">
+                    ID Card
+                  </label>
+                  <input type="text"
+                    name="id_card"
+                    id="edit_id_card"
+                    class="form-control">
+                </div>
+
+                <!-- Departement -->
+                <div class="col-md-6">
+                  <label for="edit_departement" class="form-label">
+                    Departement
+                  </label>
+                  <select name="departement"
+                    id="edit_departement"
+                    class="form-select"
+                    required>
+                    <option value="">Pilih departement</option>
+                    <option value="Production">Production</option>
+                    <option value="PPIC">PPIC</option>
+                    <option value="Quality">Quality</option>
+                  </select>
+                </div>
+
+                <!-- Level -->
+                <div class="col-md-6">
+                  <label for="edit_level" class="form-label">
+                    Level
+                  </label>
+                  <select name="level"
+                    id="edit_level"
+                    class="form-select"
+                    required>
+                    <option value="">Pilih level</option>
+                    <option value="Team Member">Team Member</option>
+                    <option value="Team Leader">Team Leader</option>
+                    <option value="Supervisor">Supervisor</option>
+                    <option value="Manager">Manager</option>
+                  </select>
+                </div>
+
+                <!-- Role -->
+                <div class="col-md-6">
+                  <label for="edit_role_id" class="form-label">
+                    Role
+                  </label>
+                  <select name="role_id"
+                    id="edit_role_id"
+                    class="form-select"
+                    required>
+                    <option value="">Pilih Role</option>
+
                     <?php foreach ($roles as $role): ?>
-                      <option value="<?= $role['id'] ?>"><?= htmlspecialchars($role['role_name']) ?></option>
+                      <option value="<?= htmlspecialchars($role['id']); ?>">
+                        <?= htmlspecialchars($role['role_name']); ?>
+                      </option>
                     <?php endforeach; ?>
                   </select>
                 </div>
 
-                <div class="col-md-6">
-                  <label for="password" class="form-label">Password</label>
-                  <input type="text" name="password" id="edit_password" class="form-control" placeholder="Kosongkan jika tidak diubah">
+                <!-- Multi NCVS -->
+                <div class="col-md-12">
+                  <label for="edit_ncvs" class="form-label">
+                    NCVS
+                  </label>
+
+                  <select name="ncvs[]"
+                    id="edit_ncvs"
+                    class="form-select"
+                    multiple
+                    required>
+
+                    <?php foreach ($ncvs as $ncvs2): ?>
+                      <option value="<?= htmlspecialchars($ncvs2['ncvs']); ?>">
+                        <?= htmlspecialchars($ncvs2['ncvs']); ?>
+                      </option>
+                    <?php endforeach; ?>
+
+                  </select>
+
+                  <small class="text-muted">
+                    Cari dan pilih satu atau lebih NCVS.
+                  </small>
                 </div>
+
+                <!-- Password -->
+                <div class="col-md-12">
+                  <label for="edit_password" class="form-label">
+                    Password
+                  </label>
+
+                  <input type="password"
+                    name="password"
+                    id="edit_password"
+                    class="form-control"
+                    placeholder="Kosongkan jika tidak ingin mengubah password">
+
+                  <small class="text-muted">
+                    Password lama akan tetap digunakan jika kolom ini dikosongkan.
+                  </small>
+                </div>
+
               </div>
             </div>
 
             <!-- Footer -->
             <div class="modal-footer">
-              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+              <button type="button"
+                class="btn btn-secondary"
+                data-bs-dismiss="modal">
                 <i class="bi bi-x-circle me-1"></i> Batal
               </button>
-              <button type="submit" class="btn btn-success" name="update-user">
+
+              <button type="submit"
+                class="btn btn-success"
+                name="update-user">
                 <i class="bi bi-check-circle me-1"></i> Update
               </button>
             </div>
+
           </form>
 
         </div>
       </div>
     </div>
-
 
   </main><!-- End #main -->
 
@@ -437,25 +782,80 @@ if ($result_ncvs->num_rows > 0) {
 
       editButtons.forEach(btn => {
         btn.addEventListener("click", function() {
-          // Ambil data dari atribut
+
           const id = this.getAttribute("data-id");
           const username = this.getAttribute("data-username");
           const nik = this.getAttribute("data-nik");
           const role_id = this.getAttribute("data-role_id");
+          const id_card = this.getAttribute("data-id_card");
+          const departement = this.getAttribute("data-departement");
+          const level = this.getAttribute("data-level");
+          const ncvsList = this.getAttribute("data-ncvs-list");
 
-          // Isi data ke modal
+          // Isi data user
           document.getElementById("edit_id_user").value = id;
           document.getElementById("edit_username").value = username;
           document.getElementById("edit_nik_user").value = nik;
           document.getElementById("edit_role_id").value = role_id;
 
-          // Kosongkan password (supaya aman)
+          document.getElementById("edit_id_card").value = id_card;
+          document.getElementById("edit_departement").value = departement;
+          document.getElementById("edit_level").value = level;
+
+          // Kosongkan password
           document.getElementById("edit_password").value = "";
+
+          // Isi multi-select NCVS
+          const ncvsSelect = $('#edit_ncvs');
+
+          const selectedNcvs = ncvsList ?
+            ncvsList.split(',').map(value => value.trim()) : [];
+
+          ncvsSelect.val(selectedNcvs).trigger('change');
         });
       });
     });
   </script>
 
+  <script>
+    $(document).ready(function() {
+
+      $('#ncvs').select2({
+        theme: 'default',
+        width: '100%',
+        placeholder: 'Cari atau pilih NCVS...',
+        allowClear: true,
+        closeOnSelect: false,
+        dropdownParent: $('#tambahUserModal'),
+        language: {
+          noResults: function() {
+            return 'NCVS tidak ditemukan';
+          },
+          searching: function() {
+            return 'Mencari NCVS...';
+          }
+        }
+      });
+
+    });
+
+    $(document).ready(function() {
+
+      $('#edit_ncvs').select2({
+        width: '100%',
+        placeholder: 'Cari atau pilih NCVS...',
+        allowClear: true,
+        closeOnSelect: false,
+        dropdownParent: $('#editUserModal'),
+        language: {
+          noResults: function() {
+            return 'NCVS tidak ditemukan';
+          }
+        }
+      });
+
+    });
+  </script>
 
 </body>
 
