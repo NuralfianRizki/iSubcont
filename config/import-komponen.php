@@ -75,18 +75,26 @@ try {
     }
 
 
-    // Check all records in tbl_komponen,
-    // including is_deleted = 1
+    // Check existing Main Component in tbl_komponen
+    // Including records with is_deleted = 1
     $resultExisting = $conn->query("
-        SELECT DISTINCT model, style
-        FROM tbl_komponen
-    ");
+    SELECT DISTINCT
+        k.model,
+        k.style,
+        k.nama_komponen AS main_component
+    FROM tbl_komponen_proses kp
+    JOIN tbl_komponen k
+        ON k.id_komponen = kp.id_input
+    WHERE kp.is_main = 1
+");
 
     while ($row = $resultExisting->fetch_assoc()) {
 
         $key = normalizeImportValue($row['model'])
             . '|'
-            . normalizeImportValue($row['style']);
+            . normalizeImportValue($row['style'])
+            . '|'
+            . normalizeImportValue($row['main_component']);
 
         $existingPairs[$key] = true;
     }
@@ -107,13 +115,19 @@ try {
     }
 
 
+
     // Revalidate every row
     foreach ($previewData as $row) {
 
-        $pairKey = normalizeImportValue($row['model'])
-            . '|'
-            . normalizeImportValue($row['style']);
+        $modelKey = normalizeImportValue($row['model']);
+        $styleKey = normalizeImportValue($row['style']);
+        $mainKey = normalizeImportValue($row['main_component']);
 
+        $pairKey = $modelKey . '|' . $styleKey;
+
+        $mainComponentKey = $pairKey . '|' . $mainKey;
+
+        // Check Model + Style
         if (!isset($masterDataPairs[$pairKey])) {
             throw new Exception(
                 "Model + Style tidak ditemukan lagi di tbl_master_data: "
@@ -121,13 +135,17 @@ try {
             );
         }
 
-        if (isset($existingPairs[$pairKey])) {
+        // Check existing Main Component
+        if (isset($existingPairs[$mainComponentKey])) {
             throw new Exception(
-                "Model + Style sudah terdaftar di tbl_komponen: "
-                    . $row['model'] . " / " . $row['style']
+                "Main Component sudah pernah terdaftar untuk Model + Style ini: "
+                    . $row['model'] . " / "
+                    . $row['style'] . " / "
+                    . $row['main_component']
             );
         }
 
+        // Recheck active vendors
         $vendorCode = normalizeImportValue($row['vendor_code']);
 
         $matchedVendors = $vendorMap[$vendorCode] ?? [];
@@ -139,10 +157,9 @@ try {
             );
         }
 
-        // Update vendor ID with the latest database result
+        // Update vendor ID with latest database result
         $row['id_vendor'] = $matchedVendors[0];
     }
-
 
     // ==========================================
     // PREPARE GROUPS

@@ -248,16 +248,28 @@ while ($row = $resultMaster->fetch_assoc()) {
 
 $existingPairs = [];
 
+// Ambil seluruh Main Component yang pernah terdaftar.
+// Termasuk record dengan is_deleted = 1.
+$existingPairs = [];
+
 $resultExisting = $conn->query("
-    SELECT DISTINCT model, style
-    FROM tbl_komponen
+    SELECT DISTINCT
+        k.model,
+        k.style,
+        k.nama_komponen AS main_component
+    FROM tbl_komponen_proses kp
+    INNER JOIN tbl_komponen k
+        ON k.id_komponen = kp.id_input
+    WHERE kp.is_main = 1
 ");
 
 while ($row = $resultExisting->fetch_assoc()) {
 
     $key = normalizeKomponen($row['model'])
         . '|'
-        . normalizeKomponen($row['style']);
+        . normalizeKomponen($row['style'])
+        . '|'
+        . normalizeKomponen($row['main_component']);
 
     $existingPairs[$key] = true;
 }
@@ -324,13 +336,17 @@ foreach ($displayRows as $index => &$row) {
     // CHECK MASTER KOMPONEN
     // ==========================================
 
+    // Check existing Main Component
+    $mainComponentKey = $pairKey . '|' . $mainKey;
+
     if (
         $modelKey !== '' &&
         $styleKey !== '' &&
-        isset($existingPairs[$pairKey])
+        $mainKey !== '' &&
+        isset($existingPairs[$mainComponentKey])
     ) {
         $row['errors'][] =
-            'Model + Style sudah pernah terdaftar di tbl_komponen.';
+            'Main Component sudah pernah terdaftar untuk Model + Style ini.';
     }
 
     // Vendor validation
